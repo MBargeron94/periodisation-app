@@ -129,6 +129,15 @@ textarea{width:100%;resize:vertical}
 .pill.rate-ok{border-color:var(--pp1);color:var(--pp1)}.pill.rate-stretch{border-color:var(--warn);color:var(--warn)}.pill.rate-bad{border-color:var(--comp);color:var(--comp)}
 table.bg td{vertical-align:top}
 .bgoal{background:var(--info-bg);border-left:4px solid var(--accent);border-radius:4px;padding:8px 11px;margin-bottom:10px;max-width:110ch;display:flex;flex-direction:column;gap:2px}
+.feedp{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+.goalc{border:1px solid var(--line);border-radius:6px;padding:12px;margin-bottom:12px}
+.goalc.main{border-color:var(--accent);box-shadow:inset 4px 0 0 var(--accent)}
+.gstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:10px}
+.gstats>div{background:var(--sunken);border-radius:4px;padding:7px 9px;font-size:12px;min-width:0}
+.gstats b{display:block;font-family:var(--display);font-size:22px;font-weight:700;line-height:1.15}
+table.path td{vertical-align:top}
+table.path tr.tgt td{background:var(--info-bg)}
+.mpath{font-size:12.5px;margin:0 0 6px;padding:5px 8px;background:var(--info-bg);border-radius:4px}
 .sugg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
 .sugg li{padding:9px 11px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:4px;max-width:110ch}
 .sugg li.strong{border-left-color:var(--comp)}
@@ -183,7 +192,7 @@ label.chk{display:flex;align-items:center;gap:6px;font-size:13px;padding-bottom:
 "use strict";
 /* ================= dates ================= */
 /* Parked features: set to true to bring them back. Their code and saved data are kept. */
-const FEATURES={goals:false}; /* season goal, block goals and estimated final entry scores */
+const FEATURES={goals:false}; /* season goal, block goals and estimated final entry scores (replaced by the rankings-feed goals) */
 const DAY=864e5, WEEK=7*DAY;
 const parse=s=>{const[y,m,d]=String(s).split("-").map(Number);return Date.UTC(y,m-1,d)};
 const iso=ms=>new Date(ms).toISOString().slice(0,10);
@@ -449,6 +458,47 @@ function suggest(P,a){
   return{list:out.filter(x=>!dis[x.key]),hidden:out.filter(x=>dis[x.key]).length};
 }
 
+/* ===== rankings feed: read-only copy of rifle-feed.json, written to the `feed` collection by Claude on request ===== */
+const ZC={50:0,70:0.524,85:1.036},EVLAB={AR10:"10m Air Rifle","3P":"50m 3 Positions",PR:"50m Prone"};
+const dmp=h=>1.5*(1-Math.exp(-h/1.5));
+/* standard normal CDF (Abramowitz and Stegun 7.1.26, error under 1e-7) */
+const Phi=x=>{const u=Math.abs(x)/Math.SQRT2,t=1/(1+0.3275911*u),y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-u*u);return x>=0?(1+y)/2:(1-y)/2};
+const mS=ms=>{const d=new Date(ms);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),1)},mAdd=(ms,n)=>{const d=new Date(ms);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+n,1)};
+const mDiff=(a,b)=>{const x=new Date(a),y=new Date(b);return(y.getUTCFullYear()-x.getUTCFullYear())*12+y.getUTCMonth()-x.getUTCMonth()};
+const mLab=ms=>fmt(ms,{day:undefined,month:"short",year:"numeric"});
+const avg=v=>v.length?v.reduce((t,x)=>t+x,0)/v.length:null,f1=x=>x==null?"—":(Math.round(x*10)/10).toFixed(1),pc=x=>Math.round(x*100)+"%";
+function assembleFeed(docs){const m=docs.find(d=>d.id==="meta");if(!m)return null;const M=m.data,F={meta:M,events:{}};
+  (M.chunks||[]).forEach(cid=>{const d=docs.find(x=>x.id===cid);if(!d)return;const x=d.data,E=F.events[x.event]=F.events[x.event]||{athletes:[]};if(x.head)Object.assign(E,x.head);E.athletes=E.athletes.concat(x.athletes||[])});
+  Object.values(F.events).forEach(E=>{E.byId={};E.athletes.forEach(a=>{E.byId[a.id]=a});E.bench={};(E.benchmarks||[]).forEach(b=>{E.bench[b.compId]=b})});return F}
+const genderOf=id=>/^SH[A-Z]{3}[MW]\d{10}$/.test(id||"")?id[5]:null;
+/* the athlete's feed entries, one per event they appear in */
+function feedEntries(a){const F=st.feed,g=genderOf(a.issfId);if(!F||!g)return[];
+  return["AR10","3P","PR"].map(k=>{const key=k+"_"+g,E=F.events[key],fa=E&&E.byId[a.issfId];return fa?{key,k,E,fa}:null}).filter(Boolean)}
+/* one goal, worked out with the formulas in the feed README */
+function goalCalc(a,g){const F=st.feed;if(!F)return{err:"The rankings feed is not loaded."};const E=F.events[g.ev];if(!E)return{err:"This event is not in the feed."};
+  const b=E.bench[g.compId];if(!b)return{err:"This competition is no longer in the feed's upcoming competitions."};
+  const fa=a.issfId&&E.byId[a.issfId];if(!fa)return{b,E,err:`${a.name} has no entry for ${E.label} in the feed.`};
+  const z=ZC[g.conf]!=null?ZC[g.conf]:ZC[70],s8=Math.hypot(fa.sd,b.sd8),s3=Math.hypot(fa.sd,b.sd3),prone=g.ev.startsWith("PR");
+  const proj=fa.meanNow+fa.slope*dmp(b.hz)+b.vOff8,pF=Phi((proj-b.cut8)/s8),pM=prone?Phi((proj-b.cut3)/s3):pF*fa.conv;
+  const needF=b.cut8+z*s8,needM=b.cut3+z*s3,need=g.out==="medal"?needM:needF;
+  const gen=parse(String(F.meta.generated).slice(0,10)),t0=g.start?parse(g.start):gen;
+  const L0=t0>gen?fa.meanNow+fa.slope*dmp((t0-gen)/(365.25*DAY)):fa.meanNow,Lend=need-b.vOff8;
+  const tgt=parse(b.start),m0=mS(t0),mEnd=mAdd(mS(tgt),-1),K=Math.max(0,mDiff(m0,mEnd)),months=[];
+  for(let i=0;i<=K;i++)months.push({m:mAdd(m0,i),mil:K?L0+(Lend-L0)*i/K:Lend});
+  months.push({m:mS(tgt),mil:null,target:true});
+  const tr=(a.training||[]).filter(x=>x.ev===g.ev);
+  months.forEach(M=>{const me=mAdd(M.m,1)-1,inM=d=>{const t=parse(d);return t>=M.m&&t<=me},sc=(fa.scores||[]).filter(x=>inM(x.d));
+    M.sc=sc;M.raw=avg(sc.map(x=>+x.s));M.adj=avg(sc.map(x=>+x.v));M.comps=(E.benchmarks||[]).filter(x=>inM(x.start));
+    M.tr=tr.filter(x=>inM(x.date));M.trAvg=avg(M.tr.filter(x=>+x.score>0).map(x=>+x.score));
+    M.status=M.mil!=null&&M.adj!=null?(M.adj>=M.mil?"on":M.adj>=M.mil-0.5*fa.sd?"close":"behind"):null});
+  return{b,E,fa,z,s8,s3,proj,pF,pM,needF,needM,need,L0,Lend,months,prone}}
+const fgList=a=>((a.fgoals||{})[a.seasonStart]||[]);
+function mainGoal(a){const L=fgList(a);if(!L.length||!st.feed)return null;const g=L.find(x=>x.id===a.fgMain)||L[0],c=goalCalc(a,g);return c.err||!c.months?null:Object.assign({g},c)}
+const STL={on:"On track",close:"Close",behind:"Behind"},stCls={on:"ok",close:"stretch",behind:"bad"};
+function monthOf(P,ms){return P&&P.fg?P.fg.months.find(M=>M.m===mS(ms)):null}
+function pathLine(M,fg){return M.target?`Target month: ${esc(fg.b.comp)}, level needed ${f1(fg.need)} at the venue (${f1(fg.Lend)} venue-adjusted)`
+  :`Milestone <strong>${f1(M.mil)}</strong> · competitions ${M.adj!=null?`${f1(M.raw)} raw / ${f1(M.adj)} adjusted (${M.sc.length})`:"none"}${M.trAvg!=null?` · training ${f1(M.trAvg)} (${M.tr.filter(x=>+x.score>0).length})`:""}${M.status?` <span class="pill rate-${stCls[M.status]}">${STL[M.status]}</span>`:""}`}
+
 /* coaching content for a week */
 function focus(w,P){
   const out=[],has=t=>w.tags.includes(t);
@@ -499,7 +549,7 @@ function focus(w,P){
 
 /* ================= state and storage ================= */
 function lsGet0(k){try{return localStorage.getItem(k)}catch(e){return null}}
-const st={campId:null,campEdit:null,view:"athlete",zoom:+lsGet0("rsp-zoom")||1,jump:false,athletes:{},cal:{events:[]},cur:null,sel:null,editing:null,confirmDel:null,adding:false,mode:"loading"};
+const st={feed:null,campId:null,campEdit:null,view:"athlete",zoom:+lsGet0("rsp-zoom")||1,jump:false,athletes:{},cal:{events:[]},cur:null,sel:null,editing:null,confirmDel:null,adding:false,mode:"loading"};
 let db=null,chain=Promise.resolve(),timers={};
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 const uid=()=>Math.random().toString(36).slice(2,10);
@@ -541,9 +591,9 @@ async function boot(){
   if(!(window.claude&&window.claude.use))return finish("local");
   const t=setTimeout(()=>finish("local"),10000);
   try{db=await window.claude.use("db");if(!db){clearTimeout(t);return finish("local")}
-    const snap=await db.collection("athletes").get(),cd=await db.doc("shared/calendar").get();clearTimeout(t);
+    const snap=await db.collection("athletes").get(),cd=await db.doc("shared/calendar").get();let fd=null;try{fd=await db.collection("feed").get()}catch(e){fd=null}clearTimeout(t);
     if(st.mode!=="loading"){db=null;return}
-    const cp=o=>JSON.parse(JSON.stringify(o));snap.docs.forEach(d=>{st.athletes[d.id]=cp(d.data())});if(cd.exists)st.cal=cp(cd.data());finish("db")}
+    const cp=o=>JSON.parse(JSON.stringify(o));snap.docs.forEach(d=>{st.athletes[d.id]=cp(d.data())});if(cd.exists)st.cal=cp(cd.data());if(fd)st.feed=assembleFeed(fd.docs.map(d=>({id:d.id,data:cp(d.data())})));finish("db")}
   catch(e){clearTimeout(t);db=null;finish("local")}
 }
 
@@ -561,12 +611,12 @@ function render(){
   if(st.mode==="loading")return;
   if(!a){$("app").innerHTML=`<div class="panel empty"><h2>No athletes yet</h2><p>Add an athlete, enter their competitions and camps, and the season is periodised backwards from the peak events: preparation phases, tapers, recovery blocks and a 4-week loading plan.</p>${st.adding?"":`<button class="pri" data-act="ath-add">Add your first athlete</button>`}</div>`;return}
   if(st.view==="squad"){$("app").innerHTML=`<div class="wrap">${squadHtml(ids)}</div>`;if(st.adding){const n=$("ath-new");n&&n.focus()}return}
-  const P=plan(view(a));
+  const P=plan(view(a));P.fg=mainGoal(a);
   if(st.sel==null||st.sel>=P.blocks.length){const now=Math.floor((Date.now()-P.s0)/WEEK);st.sel=now>=0&&now<P.N?P.W[now].block:0}
   if(st.view==="month"){$("app").innerHTML=`<div class="wrap">${monthHtml(a,P)}</div>`;if(st.adding){const n=$("ath-new");n&&n.focus()}return}
   const oldTl=$("tl"),keep=oldTl?oldTl.parentElement.scrollLeft:0;
   P.gm=FEATURES.goals?goalModel(a,P):null;
-  $("app").innerHTML=`<div class="wrap">${profileHtml(a)}${yearHtml(a,P)}${flagsHtml(P)}${suggestHtml(P,a)}${blockHtml(P)}${FEATURES.goals?goalPlanHtml(a,P):""}<div class="grid2">${eventsHtml(a)}${settingsHtml(P)}</div><div class="grid2">${goalsHtml(a)}${resultsHtml(a,P)}</div>${methodHtml()}</div>`;
+  $("app").innerHTML=`<div class="wrap">${profileHtml(a)}${yearHtml(a,P)}${flagsHtml(P)}${suggestHtml(P,a)}${blockHtml(P)}${FEATURES.goals?goalPlanHtml(a,P):""}${feedGoalsHtml(a,P)}<div class="grid2">${eventsHtml(a)}${settingsHtml(P)}</div><div class="grid2">${goalsHtml(a)}${resultsHtml(a,P)}</div>${methodHtml()}</div>`;
   if(st.adding){const n=$("ath-new");n&&n.focus()}
   const tl=$("tl");if(tl){const sc=tl.parentElement,cw=+tl.dataset.cw,lw=+tl.dataset.lw,b=P.blocks[st.sel];sc.scrollLeft=keep;
     if(st.jump){const x0=b.start*cw,x1=(b.start+b.len)*cw,vis=sc.clientWidth-lw;if(x0<sc.scrollLeft||x1>sc.scrollLeft+vis)sc.scrollLeft=Math.max(0,x0-cw)}}
@@ -579,6 +629,7 @@ const seasonLab=x=>{const a0=mondayOf(parse(x.start));return fmt(a0,{year:"numer
 function profileHtml(a){const ss=seasonsOf(a),age=a.birthYear?new Date().getUTCFullYear()-a.birthYear:null,o=(v,l)=>`<option value="${v}"${(a.strength||"even")===v?" selected":""}>${l}</option>`;
   return `<section class="panel"><div class="row">
   <label class="f">Athlete name<input id="p-name" data-p="name" value="${esc(a.name)}" maxlength="60"></label>
+  <label class="f">ISSF ID<input id="p-issf" data-p="issfId" maxlength="20" style="width:170px" placeholder="e.g. SHSUIW0101200001" value="${esc(a.issfId||"")}"></label>
   <label class="f">Birth year<input id="p-by" type="number" min="1940" max="2020" data-p="birthYear" placeholder="Year" value="${esc(a.birthYear||"")}"></label>
   <label class="f">Stronger discipline<select id="p-str" data-p="strength">${o("even","Balanced")}${o("10m","10m")}${o("50m","50m 3P")}</select></label>
   <label class="f">Season<select id="p-season">${ss.map(x=>`<option value="${x.start}"${x.start===a.seasonStart?" selected":""}>${seasonLab(x)}</option>`).join("")}</select></label>
@@ -588,7 +639,13 @@ function profileHtml(a){const ss=seasonsOf(a),age=a.birthYear?new Date().getUTCF
   <button data-act="season-next">Start next season</button>
   <span style="flex:1"></span>
   ${st.confirmDel==="ath"?`<button class="danger" data-act="ath-del2">Delete ${esc(a.name)} and their plan</button><button data-act="del-cancel">Keep</button>`:`<button class="danger" data-act="ath-del">Delete athlete</button>`}
-  </div>${age!=null||a.strength==="10m"||a.strength==="50m"?`<p class="muted" style="margin:8px 0 0;font-size:12.5px">${age!=null?`${age<=20?"Junior":"Senior"}, ${age} this year. `:""}${a.strength==="10m"||a.strength==="50m"?`In Preparation 1, 10% more of the range time goes to ${a.strength==="10m"?"50m":"10m"}, the weaker discipline. From Preparation 2 the split follows the next peak only.`:""}</p>`:""}</section>`}
+  </div>${age!=null||a.strength==="10m"||a.strength==="50m"?`<p class="muted" style="margin:8px 0 0;font-size:12.5px">${age!=null?`${age<=20?"Junior":"Senior"}, ${age} this year. `:""}${a.strength==="10m"||a.strength==="50m"?`In Preparation 1, 10% more of the range time goes to ${a.strength==="10m"?"50m":"10m"}, the weaker discipline. From Preparation 2 the split follows the next peak only.`:""}</p>`:""}${feedProfileHtml(a)}</section>`}
+function feedFresh(){const M=st.feed&&st.feed.meta;return M?`Rankings feed generated ${fmt(parse(String(M.generated).slice(0,10)),{year:"numeric"})}, copied into the planner ${fmt(parse(String(M.fetched).slice(0,10)),{year:"numeric"})}. Ask Claude to refresh it.`:"The rankings feed is not loaded. Ask Claude to load it."}
+function feedProfileHtml(a){if(!a.issfId)return"";if(!genderOf(a.issfId))return`<p class="banner" style="margin:8px 0 0">${esc(a.issfId)} does not look like an ISSF ID (SH, nation, M or W, date of birth, two digits).</p>`;
+  const L=feedEntries(a);if(!st.feed)return`<p class="muted" style="margin:8px 0 0;font-size:12.5px">${feedFresh()}</p>`;
+  return `<div class="feedp"><span class="lab">Rankings feed</span>${L.length?`<div class="tw"><table class="num"><thead><tr><th>Event</th><th>Level now</th><th>SD</th><th>Trend per year</th><th>Scores</th><th>Finals</th><th>Medals</th><th>Last score</th></tr></thead><tbody>${L.map(x=>`<tr><td>${esc(x.E.label)}${x.k==="PR"?` <span class="muted">(not planned)</span>`:""}</td><td><strong>${f1(x.fa.meanNow)}</strong></td><td>${(+x.fa.sd).toFixed(2)}</td><td>${x.fa.slope>0?"+":""}${(+x.fa.slope).toFixed(2)}</td><td>${x.fa.n}</td><td>${x.fa.finals}</td><td>${x.fa.medals}${x.fa.golds?` (${x.fa.golds} gold)`:""}</td><td>${fmt(parse(x.fa.last),{year:"numeric"})}</td></tr>`).join("")}</tbody></table></div>`
+    :`<p class="muted" style="margin:4px 0 0">No entries for ${esc(a.issfId)}. The feed only includes senior athletes with at least two usable ISSF scores in the last 24 months.</p>`}
+    <p class="muted" style="margin:6px 0 0;font-size:12.5px">${feedFresh()} Levels are venue-adjusted.</p></div>`}
 /* season goals: target score, feasibility against current level, and a ladder of block goals up to the target event */
 const OUT={final:"Make the final",medal:"Win a medal",quota:"Win a quota place",score:"Reach a score",other:"Other"};
 function sgOf(a){return(a.sgoals||{})[a.seasonStart]||{}}
@@ -646,6 +703,57 @@ function goalPlanHtml(a,P){const M=P.gm,comps=P.evs.filter(e=>e.type==="comp"&&!
     <label class="f">Realistic gain this season, 50m (points)<input id="gg-50" type="number" step="0.1" min="0" max="50" style="width:84px" data-gain="50m" placeholder="Points" value="${esc(M.gain["50m"]||"")}"></label></div>
   <p class="muted" style="margin:6px 0 0;font-size:12.5px;max-width:100ch">The realistic gain is your judgement of how much this athlete can improve in a season. A goal within it is on track, up to one and a half times it is stretching, and beyond that unlikely.</p>
   ${why}${lad}</section>`}
+function feedGoalsHtml(a,P){
+  const F=st.feed,L=feedEntries(a),gl=fgList(a),today=iso(Date.now()),opt=(v,l,c)=>`<option value="${v}"${String(c)===String(v)?" selected":""}>${l}</option>`;
+  const head=`<div class="hd"><h2>Goals and pathway</h2><span class="muted">${feedFresh()}</span></div>`;
+  if(!F)return `<section class="panel">${head}<p class="muted" style="margin:0">Goals use the rankings feed for cuts, levels and odds.</p></section>`;
+  if(!a.issfId||!L.length)return `<section class="panel">${head}<p class="muted" style="margin:0">${a.issfId?`${esc(a.name)} has no entries in the feed, so goals cannot be worked out. The feed only includes senior athletes with at least two usable ISSF scores in the last 24 months.`:`Add ${esc(a.name)}'s ISSF ID in the profile at the top to set goals against the rankings feed.`}</p></section>`;
+  const card=g=>{const c=goalCalc(a,g),E=F.events[g.ev],main=P.fg&&P.fg.g.id===g.id;
+    const comps=E?(E.benchmarks||[]).slice().sort((x,y)=>parse(x.start)-parse(y.start)):[];
+    const ctl=`<div class="row" style="gap:8px 12px">
+      <label class="f">Event<select id="fe-${g.id}" data-fg="${g.id}|ev">${L.map(x=>opt(x.key,esc(x.E.label),g.ev)).join("")}</select></label>
+      <label class="f" style="flex:1 1 240px">Target competition<select id="fc-${g.id}" data-fg="${g.id}|compId"><option value="">Choose</option>${comps.map(b=>opt(b.compId,`${esc(b.comp)} (${fmt(parse(b.start))})`,g.compId)).join("")}</select></label>
+      <label class="f">Outcome<select id="fo-${g.id}" data-fg="${g.id}|out">${opt("final","Make the final",g.out)}${opt("medal","Win a medal",g.out)}</select></label>
+      <label class="f">Confidence<select id="fz-${g.id}" data-fg="${g.id}|conf">${[50,70,85].map(v=>opt(v,v+"%",g.conf)).join("")}</select></label>
+      <label class="f">Start date<input id="fs-${g.id}" type="date" data-fg="${g.id}|start" value="${esc(g.start||"")}"></label>
+      <label class="chk"><input type="radio" name="fgmain" id="fm-${g.id}" data-fgmain="${g.id}"${main?" checked":""}> Show in the plan</label>
+      <button class="link danger" data-act="fg-del" data-id="${g.id}">Remove</button></div>
+      <label class="f" style="margin-top:6px">Notes<textarea id="fn-${g.id}" data-fg="${g.id}|notes" rows="2" maxlength="1000">${esc(g.notes||"")}</textarea></label>`;
+    if(c.err)return `<article class="goalc">${ctl}<p class="banner" style="margin:8px 0 0">${esc(c.err)}</p></article>`;
+    const b=c.b,fa=c.fa,lnk=st.cal.events.find(e=>e.feedComp===b.compId),pk=lnk&&(a.picks||{})[lnk.id],tier=lnk&&pk&&pk.on?(lnk.training?"small":pk.tier||lnk.tier):null;
+    const chk=!lnk?`${esc(b.comp)} is not linked to a competition in the calendar yet. Link it in the event list to see it in the plan.`
+      :!(pk&&pk.on)?`${esc(lnk.name)} is not ticked in ${esc(a.name)}'s plan, so the plan does not prepare for it.`
+      :tier!=="peak"&&tier!=="key"?`In ${esc(a.name)}'s plan, ${esc(lnk.name)} is a ${tierLab[tier].toLowerCase()} competition. A goal event is usually a peak or key event, so the plan builds and tapers for it.`:"";
+    const stat=(lab,val,sub)=>`<div><span class="lab">${lab}</span><b>${val}</b>${sub?`<div class="muted">${sub}</div>`:""}</div>`;
+    const ms=c.months,mrow=M=>`<tr class="${M.target?"tgt":""}"><td style="white-space:nowrap"><strong>${mLab(M.m)}</strong></td>
+      <td class="num">${M.target?`<strong>${f1(c.need)}</strong><div class="muted" style="font-size:11.5px">at the venue · ${f1(c.Lend)} adjusted</div>`:f1(M.mil)}</td>
+      <td>${M.comps.map(x=>`<div>${esc(x.comp)} <span class="muted">${fmt(parse(x.start))}</span></div>`).join("")||`<span class="muted">—</span>`}</td>
+      <td class="num">${M.adj!=null?`${f1(M.raw)} / <strong>${f1(M.adj)}</strong><div class="muted" style="font-size:11.5px">${M.sc.map(x=>esc(x.c)).join(", ")}</div>`:`<span class="muted">—</span>`}</td>
+      <td>${M.status?`<span class="pill rate-${stCls[M.status]}">${STL[M.status]}</span>`:`<span class="muted">—</span>`}</td>
+      <td class="num">${M.trAvg!=null?f1(M.trAvg)+` <span class="muted">(${M.tr.filter(x=>+x.score>0).length})</span>`:`<span class="muted">—</span>`}${M.tr.filter(x=>x.note).map(x=>`<div class="muted" style="font-size:11.5px">${fmt(parse(x.date))}: ${esc(x.note)}</div>`).join("")}</td></tr>`;
+    return `<article class="goalc${main?" main":""}">${ctl}
+      <div class="gstats num">
+        ${stat("Projected final cut",f1(b.cut8),`80% range ${f1(b.cut8Lo)}–${f1(b.cut8Hi)}`)}
+        ${g.out==="medal"?stat("Projected 3rd-best score",f1(b.cut3),`80% range ${f1(b.cut3Lo)}–${f1(b.cut3Hi)} · typical bronze final ${f1(b.bronze)}`):""}
+        ${stat(`Level needed (${g.conf}%)`,f1(c.need),`at the venue by ${fmt(parse(b.start),{year:"numeric"})} · ${f1(c.Lend)} venue-adjusted`)}
+        ${stat("Level now",f1(fa.meanNow),`venue-adjusted · SD ${(+fa.sd).toFixed(2)} · trend ${fa.slope>0?"+":""}${(+fa.slope).toFixed(2)} per year`)}
+        ${stat("Projected at the target",f1(c.proj),`at the venue · ${b.nVenue?`venue difference ${b.vOff8>0?"+":""}${f1(b.vOff8)} from ${b.nVenue} competition${b.nVenue===1?"":"s"}`:"no venue history"}`)}
+        ${stat("Chance of the final",pc(c.pF),"")}
+        ${stat("Chance of a medal",pc(c.pM),c.prone?"from the 3rd-best line":`final chance × ${(+fa.conv).toFixed(2)} conversion`)}
+      </div>
+      ${chk?`<p class="banner" style="margin:8px 0 0">${chk}</p>`:""}
+      <h3 style="margin:12px 0 4px">Pathway</h3>
+      <p class="muted" style="margin:0 0 6px;font-size:12.5px">Monthly milestones rise in a straight line from ${f1(c.L0)} (${g.start&&parse(g.start)>parse(String(F.meta.generated).slice(0,10))?"projected level at the start date":"level now"}) to ${f1(c.Lend)}, the level needed with the target venue's usual difference taken off, one month before the competition. Status compares the month's venue-adjusted competition average with its milestone; close means within half the SD (${f1(fa.sd/2)}).</p>
+      <div class="tw"><table class="path"><thead><tr><th>Month</th><th>Milestone</th><th>Feed competitions</th><th>Competition average (raw / adjusted)</th><th>Status</th><th>Training</th></tr></thead><tbody>${ms.map(mrow).join("")}</tbody></table></div></article>`};
+  const trs=(a.training||[]).slice().sort((x,y)=>y.date.localeCompare(x.date)),evOpt=L.map(x=>opt(x.key,esc(x.E.label))).join("");
+  const train=`<h3 style="margin:16px 0 4px">Training scores</h3>
+    <form id="tr-form" class="row" style="gap:8px 12px"><label class="f">Date<input id="tr-date" type="date" required value="${today}"></label>
+      <label class="f">Event<select id="tr-ev">${evOpt}</select></label><label class="f">Score<input id="tr-score" type="number" step="0.1" min="0" max="700" style="width:90px"></label>
+      <label class="f" style="flex:1 1 220px">Note<input id="tr-note" maxlength="200" placeholder="Conditions, focus, what to take from it"></label><button class="pri" type="submit">Add</button></form>
+    ${trs.length?`<div class="tw" style="margin-top:8px"><table><thead><tr><th>Date</th><th>Event</th><th>Score</th><th>Note</th><th></th></tr></thead><tbody>${trs.slice(0,30).map(x=>`<tr><td class="num" style="white-space:nowrap">${fmt(parse(x.date),{year:"numeric"})}</td><td>${esc((F.events[x.ev]||{}).label||x.ev)}</td><td class="num">${x.score!=null&&x.score!==""?f1(+x.score):"—"}</td><td>${esc(x.note||"")}</td><td class="act"><button class="link danger" data-act="tr-del" data-id="${x.id}">Remove</button></td></tr>`).join("")}</tbody></table></div>${trs.length>30?`<p class="muted" style="font-size:12.5px">Showing the latest 30 of ${trs.length}.</p>`:""}`
+      :`<p class="muted" style="margin:6px 0 0;font-size:12.5px">Training scores appear in the pathway month they fall in, next to the competition averages.</p>`}`;
+  return `<section class="panel">${head}${gl.length?gl.map(card).join(""):`<p class="muted" style="margin:0 0 8px">Set a goal: an event, a target competition from the feed, make the final or win a medal, and how confident you want to be. The goal's pathway then sits in the plan above.</p>`}
+    <button class="pri" data-act="fg-add" style="margin-top:8px">Add a goal</button>${train}</section>`}
 function goalsHtml(a){return `<section class="panel"><div class="hd"><h2>${FEATURES.goals?"Goal notes and athlete notes":"Season goals and notes"}</h2><span class="muted">${seasonLab({start:a.seasonStart,weeks:a.weeks||52})}</span></div>
   <label class="f">${FEATURES.goals?"Goal notes for this season":"Goals for this season"}<textarea id="g-goals" data-goal="1" rows="6" maxlength="3000" placeholder="Outcome goals (for example a final at the World Championships), performance goals (scores to reach), and process goals (what the athlete will do in training and in matches).">${esc((a.goals||{})[a.seasonStart]||"")}</textarea></label>
   <label class="f" style="margin-top:10px">Notes on ${esc(a.name)}<textarea id="g-notes" data-p="notes" rows="5" maxlength="3000" placeholder="Anything that should stay with this athlete from season to season: equipment, injuries, what works in competition.">${esc(a.notes||"")}</textarea></label>
@@ -688,12 +796,13 @@ function yearHtml(a,P){
   return `<section class="panel"><div class="hd"><h2>Season ${fmt(P.s0,{year:"numeric"})} – ${fmt(P.s0+P.N*WEEK-DAY,{year:"numeric"})}</h2><div class="row" style="align-items:center"><span class="muted">Select any week to open its 4-week block</span><div class="seg" role="group" aria-label="Timeline zoom">${zb(1,"Year")}${zb(2,"Half")}${zb(4,"Quarter")}</div></div></div>
   <div class="tl"><div class="tl-in" id="tl" data-lw="${LW}" data-cw="${CW}" style="width:${LW+TW}px">
     ${row("",18,mon)}${row("WEEK",16,wk)}${row("PHASE",26,ph)}${row("10M EVENTS",l10.h,l10.html)}${row("50M EVENTS",l50.h,l50.html)}${row("CAMPS",lc.h,lc.html)}${row("HOLIDAYS",lh.h,lh.html)}
-    ${row("VOLUME",LH,load)}${planRow}${shotRow}${row("10M RANGE",18,heat("t10","c10",mt))}${row("50M RANGE",18,heat("t50","c50",mt))}${row("FINALS",18,heat("fin","comp",Math.max(1,mx("fin"))))}${row("PHYSICAL",18,heat("phys","cphys",mx("phys")))}${row("MENTAL",18,heat("mental","cment",mx("mental")))}${row("RECOVERY",18,heat("rec","crec",mx("rec")))}
+    ${row("VOLUME",LH,load)}${planRow}${shotRow}${row("10M RANGE",18,heat("t10","c10",mt))}${row("50M RANGE",18,heat("t50","c50",mt))}${row("FINALS",18,heat("fin","comp",Math.max(1,mx("fin"))))}${row("PHYSICAL",18,heat("phys","cphys",mx("phys")))}${row("MENTAL",18,heat("mental","cment",mx("mental")))}${row("RECOVERY",18,heat("rec","crec",mx("rec")))}${P.fg?row("PATHWAY",18,P.W.map(w=>{const M=monthOf(P,w.start+3*DAY);if(!M)return"";const col=M.target?"comp":M.status==="on"?"pp1":M.status==="close"?"warn":M.status==="behind"?"comp":"line";
+      return `<div class="heat" style="left:${w.i*CW+1}px;width:${CW-2}px;background:color-mix(in srgb,var(--${col}) ${M.status||M.target?75:45}%,transparent)" title="${mLab(M.m)}: ${M.target?"target month, level needed "+f1(P.fg.need):"milestone "+f1(M.mil)+(M.adj!=null?", adjusted average "+f1(M.adj):"")+(M.status?", "+STL[M.status].toLowerCase():"")}">${det&&new Date(w.start).getUTCDate()<=7?(M.target?"Target":f1(M.mil)):""}</div>`}).join("")):""}
     <div class="sel" style="left:${LW+b.start*CW}px;width:${b.len*CW}px"></div>${now>=0&&now<P.N?`<div class="today" style="left:${LW+now*CW}px" title="Today"></div>`:""}
   </div></div>
   <div class="legend">${Object.keys(PH).map(k=>`<span><b class="sw-${k}"></b>${PH[k].n}</span>`).join("")}
     <span><b style="background:var(--comp)"></b>★ Peak</span><span><b style="background:var(--warn)"></b>◆ Key</span><span><b style="background:var(--fg)"></b>Major</span><span><b style="border:2px solid var(--fg)"></b>Minor</span>
-    <span>Bars: weekly volume (dashed line 50%)</span><span>Line: mental intensity 1–10</span><span>Shaded rows: hours, darker is more</span><span>Dashed vertical: today</span><span>Highlighted week number: adjusted by hand</span></div></section>`;
+    <span>Bars: weekly volume (dashed line 50%)</span><span>Line: mental intensity 1–10</span><span>Shaded rows: hours, darker is more</span><span>Dashed vertical: today</span><span>Highlighted week number: adjusted by hand</span>${P.fg?`<span>Pathway row: monthly milestone towards ${esc(P.fg.b.comp)}, green on track, amber close, red behind, grey no competition yet</span>`:""}</div></section>`;
 }
 function monthHtml(a,P){
   const end=P.s0+P.N*WEEK-DAY,today=iso(Date.now()),evs=[...new Set(P.W.flatMap(w=>w.events))];let out="",d=new Date(P.s0),y=d.getUTCFullYear(),m=d.getUTCMonth();
@@ -706,7 +815,8 @@ function monthHtml(a,P){
         cells+=`<div class="day${inM?"":" out"}${inM&&iso(day)===today?" now":""}">${inM?`<span class="dn num">${new Date(day).getUTCDate()}</span>${ch}`:""}</div>`}
       rows+=w?`<div class="mrow" data-mw="${wi}" style="--pc:var(--${w.phase.toLowerCase()})"><div class="wsum num"${P.wn[iso(w.start)]?` title="${esc(P.wn[iso(w.start)])}"`:""}><b>Wk ${wi+1}</b> · ${PH[w.phase].s}<div>${esc(w.type)}${w.manual?" (hand-set)":""}</div><div>${w.load}% · ${hrs(w.hours)} h</div>${w.shots10+w.shots50?`<div class="muted">${w.shots10+w.shots50} shots</div>`:""}${P.wn[iso(w.start)]?`<div class="clip" style="color:var(--accent)">Note: ${esc(P.wn[iso(w.start)])}</div>`:""}</div>${cells}</div>`
         :`<div class="mrow off"><div class="wsum muted">Outside the season</div>${cells}</div>`}
-    out+=`<section class="mon-b"><h3>${fmt(first,{day:undefined,month:"long",year:"numeric"})}</h3><div class="mscroll"><div class="mgrid">${head}${rows}</div></div></section>`;
+    const PM=monthOf(P,first);
+    out+=`<section class="mon-b"><h3>${fmt(first,{day:undefined,month:"long",year:"numeric"})}</h3>${PM?`<div class="mpath">${pathLine(PM,P.fg)}${PM.comps.length?`<div class="muted">${PM.comps.map(x=>esc(x.comp)).join(", ")}</div>`:""}</div>`:""}<div class="mscroll"><div class="mgrid">${head}${rows}</div></div></section>`;
     if(++m>11){m=0;y++}}
   return `<section class="panel"><div class="hd"><h2>${esc(a.name)}: month calendar</h2><span class="muted">Select a week to open its 4-week block</span></div>
   <div class="months">${out}</div>
@@ -759,6 +869,7 @@ function blockHtml(P){
   const cats=[["t10","c10","10m range"],["t50","c50","50m 3P range"],["phys","cphys","Physical"],["mental","cment","Mental"],["rec","crec","Recovery"]];
   return `<section class="panel"><div class="hd"><div><div class="lab">Block ${st.sel+1} of ${P.blocks.length} · ${esc(b.pattern)}</div><h2>${nm}, weeks ${b.start+1}–${b.start+b.len} <span class="muted" style="font-weight:500">${range(ws[0].start,ws[ws.length-1].start+6*DAY)}</span></h2></div>
   <div class="row">${Object.keys(P.adj).length?`<button class="link" data-act="adj-clear-all">Clear all ${Object.keys(P.adj).length} hand adjustments</button>`:""}<button data-act="blk-prev"${st.sel===0?" disabled":""}>← Previous block</button><button data-act="blk-next"${st.sel===P.blocks.length-1?" disabled":""}>Next block →</button></div></div>
+  ${P.fg?(()=>{const s0=P.W[b.start].start,e0=P.W[b.start+b.len-1].start+6*DAY,Ms=P.fg.months.filter(M=>M.m<=e0&&mAdd(M.m,1)>s0);return Ms.length?`<div class="bgoal"><span class="lab">Pathway towards ${esc(P.fg.b.comp)} · ${esc(P.fg.E.label)}</span>${Ms.map(M=>`<div><strong>${mLab(M.m)}</strong> · ${pathLine(M,P.fg)}${M.comps.length?` · <span class="muted">${M.comps.map(x=>esc(x.comp)).join(", ")}</span>`:""}</div>`).join("")}</div>`:""})():""}
   ${(L=>L?`<div class="bgoal"><span class="lab">Block goal towards ${esc(P.gm.main.evO.name)}</span><div><strong>${L.mk?esc(L.mk.name)+": ":""}${L.score} at ${L.DL}</strong>${L.res!=null?` · result ${L.res} <span class="pill rate-${L.met?"ok":"bad"}">${L.met?"Met":"Missed"}</span>`:""}</div><div>${esc(L.proc)}</div></div>`:"")(P.gm&&P.gm.ladder.find(x=>x.b.start===b.start))}
   <div class="weeks">${ws.map(w=>{const tot=cats.reduce((s,c)=>s+w.split[c[0]],0)||1;return `<article class="wkc ${w.phase}">
     <div><div class="lab num">Week ${w.i+1} · ${range(w.start,w.start+6*DAY)}</div><div class="row" style="gap:5px;margin-top:4px"><span class="pill">${esc(w.type)}</span>${w.manual?`<span class="pill" style="border-color:var(--accent);color:var(--accent)">Hand-set</span>`:""}${w.tags.map(t=>`<span class="pill">${esc(t)}</span>`).join("")}</div></div>
@@ -780,13 +891,15 @@ function eventsHtml(a){
   const ed=st.editing?st.cal.events.find(e=>e.id===st.editing):null,v=ed||{type:"comp",disc:"10m",tier:"major"},pk=a.picks||{};
   const opt=(val,lab,c)=>`<option value="${val}"${c===val?" selected":""}>${lab}</option>`;
   const list=st.cal.events.slice().sort((x,y)=>parse(x.start)-parse(y.start)),nOn=list.filter(e=>pk[e.id]&&pk[e.id].on).length,others=Object.keys(st.athletes).length>1;
-  return `<section class="panel"><div class="hd"><h2>Competitions, camps and holidays</h2><span class="muted">${list.length} in the shared calendar · ${nOn} in ${esc(a.name)}'s plan</span></div>
+  const sugg=feedMatches();
+  return `<section class="panel"><div class="hd"><h2>Competitions, camps and holidays</h2>${sugg.length?`<button class="link" data-act="fc-link">Link ${sugg.length} competition${sugg.length===1?"":"s"} to the ISSF calendar</button>`:""}<span class="muted">${list.length} in the shared calendar · ${nOn} in ${esc(a.name)}'s plan</span></div>
   <form id="ev-form" class="row" style="margin-bottom:12px">
     <label class="f" style="flex:1 1 180px">Name<input id="ev-name" required maxlength="80" value="${esc(v.name||"")}"></label>
     <label class="f">Type<select id="ev-type">${opt("comp","Competition",v.training?"training":v.type)}${opt("training","Training match",v.training?"training":v.type)}${opt("camp","Training camp",v.type)}${opt("hol","Holiday (no training)",v.type)}</select></label>
     <label class="f" id="ev-disc-w">Discipline<select id="ev-disc">${opt("10m","10m",v.disc)}${opt("50m","50m 3P",v.disc)}${opt("both","Both",v.disc)}</select></label>
     <label class="f" id="ev-tier-w">Usual priority<select id="ev-tier">${opt("small","Minor",v.tier)}${opt("major","Major",v.tier)}${opt("key","Key",v.tier)}${opt("peak","Peak",v.tier)}</select></label>
     <label class="f">First day<input id="ev-start" type="date" required value="${esc(v.start||"")}"></label>
+    ${st.feed?`<label class="f" id="ev-fc-w" style="flex:1 1 220px">ISSF competition<select id="ev-fc"><option value="">Not an ISSF competition</option>${st.feed.meta.calendar.map(c=>`<option value="${c.id}"${v.feedComp===c.id?" selected":""}>${esc(c.name)}, ${esc(c.city)} (${fmt(parse(c.start))})</option>`).join("")}</select></label>`:""}
     <label class="f">Last day<input id="ev-end" type="date" min="${esc(v.start||"")}" value="${esc(v.end||"")}"></label>
     <label class="f" id="ev-f10-w">Est. final entry 10m<input id="ev-f10" type="number" step="0.1" min="0" max="700" style="width:90px" placeholder="Score" value="${esc(v.fin10||"")}"></label>
     <label class="f" id="ev-f50-w">Est. final entry 50m<input id="ev-f50" type="number" step="0.1" min="0" max="700" style="width:90px" placeholder="Score" value="${esc(v.fin50||"")}"></label>
@@ -796,7 +909,7 @@ function eventsHtml(a){
   </form>
   ${list.length?`<div class="tw"><table><thead><tr><th>In plan</th><th>Dates</th><th>Event</th><th>Priority for ${esc(a.name)}</th><th>Taper</th><th></th></tr></thead><tbody>${list.map(e=>{const k=pk[e.id]||{},on=!!k.on,tier=k.tier||e.tier;return `<tr class="${on?"":"off"}">
     <td><input type="checkbox" id="pk-${e.id}" data-pick="${e.id}"${on?" checked":""} aria-label="Include ${esc(e.name)} in this athlete's plan"></td>
-    <td class="num" style="white-space:nowrap">${range(parse(e.start),parse(e.end||e.start))}</td><td>${esc(e.name)}${e.type==="comp"?` <span class="muted">· ${discLab[e.disc]}</span>`:""}${FEATURES.goals&&(e.fin10||e.fin50)?`<div class="muted" style="font-size:12px">Est. final entry: ${[e.fin10?"10m "+e.fin10:"",e.fin50?"50m "+e.fin50:""].filter(Boolean).join(" · ")}</div>`:""}</td>
+    <td class="num" style="white-space:nowrap">${range(parse(e.start),parse(e.end||e.start))}</td><td>${esc(e.name)}${e.type==="comp"?` <span class="muted">· ${discLab[e.disc]}</span>`:""}${e.feedComp&&st.feed?(c=>c?`<div class="muted" style="font-size:12px">ISSF: ${esc(c.name)}, ${esc(c.city)}</div>`:`<div class="muted" style="font-size:12px">ISSF competition no longer in the feed</div>`)(st.feed.meta.calendar.find(c=>c.id===e.feedComp)):""}${FEATURES.goals&&(e.fin10||e.fin50)?`<div class="muted" style="font-size:12px">Est. final entry: ${[e.fin10?"10m "+e.fin10:"",e.fin50?"50m "+e.fin50:""].filter(Boolean).join(" · ")}</div>`:""}</td>
     <td>${e.type==="camp"?"Camp":e.type==="hol"?"Holiday, no training":e.training?"Training match":on?`<select id="pt-${e.id}" data-ptier="${e.id}" aria-label="Priority">${opt("small","Minor",tier)}${opt("major","Major",tier)}${opt("key","Key ◆",tier)}${opt("peak","Peak ★",tier)}</select>${tier==="major"?` <label class="chk" style="display:inline-flex;padding:0 0 0 6px"><input type="checkbox" id="pq-${e.id}" data-pq="${e.id}"${(k.q!=null?k.q:e.quota)?" checked":""}> Quota</label>`:""}`:`<span class="muted">${tierLab[e.tier]} usually${e.quota?", quota":""}</span>`}</td>
     <td style="white-space:nowrap">${e.type==="comp"&&on&&tier==="peak"?`<input id="pp-${e.id}" type="number" min="1" max="4" style="width:58px" placeholder="${settingsOf(a).taperPeak}" data-ptaper="${e.id}" value="${esc(k.taper||"")}" aria-label="Taper weeks"> wk`:""}</td>
     <td class="act">${st.confirmDel===e.id?`<button class="link danger" data-act="ev-del2" data-id="${e.id}">Delete for all athletes</button><button class="link" data-act="del-cancel">Keep</button>`:`<button class="link" data-act="ev-edit" data-id="${e.id}">Edit</button><button class="link danger" data-act="ev-del" data-id="${e.id}">Delete</button>`}</td></tr>`}).join("")}</tbody></table></div>
@@ -826,6 +939,7 @@ function methodHtml(){return `<section class="panel"><details><summary>How the p
    <li><strong>Finals training.</strong> A share of range time is set aside for finals in every training phase, and it rises in the run-in to a competition: any week with a major, quota or peak event in the next two weeks, and the last build block before a peak. Working on finals in the build-up takes attention off qualification scores while building resilience and familiarity with the format. The shares are under Planning rules.</li>
    <li><strong>Athlete details.</strong> Stronger discipline moves 10% of Preparation 1 range time to the weaker one. Seasons are date windows on the same calendar, so starting a new season keeps the old one viewable with its goals, notes, hand adjustments and results.</li>
    ${FEATURES.goals?`<li><strong>Season goal and block goals.</strong> A goal names a target event, a discipline and an outcome. For "make the final" the target score is the estimated final entry score entered on the competition; for other outcomes you type it. The current level is the average of the last three entered results, or a value you set. The gap is rated against your realistic gain for the season. Block goals step the score from the current level to the target across the 4-week blocks before the event, each measured at a marker competition in that block, with a process goal for the phase.</li>`:""}
+   <li><strong>Goals and pathway.</strong> Goals use the Olympic Rifle Rankings feed with the formulas in its README: projected level at the target = level now + trend × 1.5 × (1 − e<sup>−h/1.5</sup>) + the venue's usual difference, where h is the years ahead. The chance of the final is Φ((projected − cut) / √(SD² + cut scatter²)), and the level needed is the cut plus z × the same spread, with z 0, 0.524 or 1.036 for 50, 70 or 85% confidence. Medals use the final chance × the athlete's conversion rate in air rifle and 3P, and the 3rd-best line in prone; the level needed for a medal uses the 3rd-best line. A start date before the feed date uses the level now. Monthly milestones run in a straight line from that level to the needed level less the venue difference, one month before the competition.</li>
    <li><strong>Hand adjustments.</strong> Any week's phase, volume or intensity can be set by hand in its week card. Adjusted weeks stay as you set them when events change, and can be returned to the plan one at a time or all together.</li>
    <li><strong>Competition days.</strong> No training is planned on the days of a competition, whatever its priority. The week's hours shrink in proportion to the days left, and a week that is all competition (or all but one day) has no training hours at all. The plan covers the build-up before each competition and the recovery after it.</li>
    <li><strong>Holidays.</strong> A week with five or more holiday days is a holiday week, shown as its own phase. It has no training and does not count towards the preparation phases: Preparation 1 and 2 are worked out from the training weeks only, so a holiday no longer uses up general preparation. Holiday days carry no training: the week's hours shrink in proportion, a week of five or more days off becomes a holiday week, and the following week is capped so the athlete eases back in. Holidays are flagged when they land in a taper, a competition phase, the last build block before a peak, or on top of a camp or competition. The recovery period after a peak is the best place for them.</li>
@@ -835,8 +949,13 @@ function methodHtml(){return `<section class="panel"><details><summary>How the p
   <p class="muted">The hour splits between range, physical, mental and recovery work are starting values to adjust under Planning rules. Sources: Haidn, Weineck and Haidn-Tschalova (2021); Weineck (2014); Issurin (2010) on block periodisation; Bosquet et al. (2007); Mujika and Padilla (2003).</p></div></details></section>`}
 
 /* ================= events ================= */
+/* calendar events whose dates overlap a feed competition and whose name mentions its city */
+function feedMatches(){if(!st.feed)return[];const C=st.feed.meta.calendar,out=[];
+  st.cal.events.forEach(e=>{if(e.type!=="comp"||e.training||e.feedComp||!e.start)return;const s=parse(e.start),en=parse(e.end||e.start),nm=e.name.toLowerCase();
+    const c=C.find(c=>parse(c.start)<=en+DAY&&parse(c.end)>=s-DAY&&(c.ranges==="all"||e.disc==="both"||c.ranges===e.disc)&&nm.includes(c.city.toLowerCase().slice(0,4)));if(c)out.push({e,c})});return out}
+function bestFeedComp(s,en,disc){if(!st.feed||!s)return"";const a=parse(s),b=parse(en||s),C=st.feed.meta.calendar.filter(c=>parse(c.start)<=b+DAY&&parse(c.end)>=a-DAY&&(c.ranges==="all"||disc==="both"||c.ranges===disc));return C.length?C[0].id:""}
 function syncEvForm(){const t=$("ev-type"),ti=$("ev-tier");if(!t)return;const v=t.value,comp=v==="comp",d=$("ev-disc").value;
-  $("ev-disc-w").hidden=!(comp||v==="training");$("ev-tier-w").hidden=!comp;$("ev-quota-w").hidden=!comp||ti.value!=="major";$("ev-f10-w").hidden=!FEATURES.goals||!comp||d==="50m";$("ev-f50-w").hidden=!FEATURES.goals||!comp||d==="10m";
+  $("ev-disc-w").hidden=!(comp||v==="training");$("ev-tier-w").hidden=!comp;$("ev-quota-w").hidden=!comp||ti.value!=="major";if($("ev-fc-w"))$("ev-fc-w").hidden=!comp;$("ev-f10-w").hidden=!FEATURES.goals||!comp||d==="50m";$("ev-f50-w").hidden=!FEATURES.goals||!comp||d==="10m";
   const s0=$("ev-start"),e0=$("ev-end");if(s0&&e0)e0.min=s0.value||""}
 document.addEventListener("click",e=>{
   const tl=e.target.closest("#tl");
@@ -856,6 +975,11 @@ document.addEventListener("click",e=>{
     const day=iso(P0.s0+(L.b.start+L.b.len-1)*WEEK+5*DAY),ev={id:uid(),name:"Training match",type:"comp",start:day,end:day,disc:M0.main.disc,tier:"small",training:true};
     st.cal.events.push(ev);saveCal();mutate(a=>{a.picks=a.picks||{};a.picks[ev.id]={on:true};const G=sgW(a);G.blocks=Object.assign({},G.blocks,{[id]:Object.assign({},(G.blocks||{})[id],{marker:ev.id})})});return}
   if(act==="season-next"){st.sel=null;mutate(a=>{const l=seasonsOf(a),nx=iso(mondayOf(parse(a.seasonStart))+(a.weeks||52)*WEEK),x=l.find(q=>q.start===nx);a.seasons=x?l:l.concat([{start:nx,weeks:52}]);a.seasonStart=nx;a.weeks=x?x.weeks:52});return}
+  if(act==="fg-add"){const a0=cur(),L=feedEntries(a0);if(!L.length)return;const x=L.find(y=>y.k!=="PR")||L[0],h=x.fa.headline&&x.E.bench[x.fa.headline.compId]?x.fa.headline.compId:"";
+    mutate(a=>{a.fgoals=Object.assign({},a.fgoals);const l=(a.fgoals[a.seasonStart]||[]).slice();l.push({id:uid(),ev:x.key,compId:h,out:"final",conf:70,start:iso(Date.now()),notes:""});a.fgoals[a.seasonStart]=l;if(l.length===1)a.fgMain=l[0].id});return}
+  if(act==="fg-del"){mutate(a=>{a.fgoals=Object.assign({},a.fgoals);a.fgoals[a.seasonStart]=(a.fgoals[a.seasonStart]||[]).filter(g=>g.id!==id);if(a.fgMain===id)delete a.fgMain});return}
+  if(act==="tr-del"){mutate(a=>{a.training=(a.training||[]).filter(x=>x.id!==id)});return}
+  if(act==="fc-link"){feedMatches().forEach(({e,c})=>{e.feedComp=c.id});saveCal();render();return}
   if(act==="sg-on"){mutate(a=>{a.picks=a.picks||{};a.picks[id]=Object.assign({},a.picks[id],{on:true})});return}
   if(act==="sg-skip"){mutate(a=>{a.picks[id]=Object.assign({},a.picks[id],{on:false})});return}
   if(act==="sg-tier"){const v=b.dataset.v,ev=st.cal.events.find(x=>x.id===id);mutate(a=>{const k=a.picks[id];if(ev&&v===ev.tier)delete k.tier;else k.tier=v;if(v!=="peak")delete k.taper});return}
@@ -879,11 +1003,14 @@ document.addEventListener("click",e=>{
   else if(act==="set-reset"){mutate(a=>{a.settings={}});syncEvForm()}
 });
 document.addEventListener("submit",e=>{
+  if(e.target.id==="tr-form"){e.preventDefault();const d=$("tr-date").value,sc=$("tr-score").value.trim(),no=$("tr-note").value.trim();if(!d||(!sc&&!no))return;
+    mutate(a=>{a.training=(a.training||[]).concat([{id:uid(),date:d,ev:$("tr-ev").value,score:sc===""?null:+sc,note:no}])});return}
   if(e.target.id!=="ev-form")return;e.preventDefault();
   const name=$("ev-name").value.trim(),start=$("ev-start").value;if(!name||!start)return;
   let end=$("ev-end").value||start;if(parse(end)<parse(start))end=start;
   const tsel=$("ev-type").value,trn=tsel==="training",type=trn?"comp":tsel,was=st.editing,ev={id:was||uid(),name,type,start,end,disc:type!=="comp"?"both":$("ev-disc").value,tier:type!=="comp"?null:$("ev-tier").value};
   if(trn){ev.tier="small";ev.training=true}
+  if(type==="comp"&&!trn&&$("ev-fc")&&$("ev-fc").value)ev.feedComp=$("ev-fc").value;
   else if(type==="comp"){if(ev.tier==="major"&&$("ev-quota").checked)ev.quota=true;
     const f1=parseFloat($("ev-f10").value),f2=parseFloat($("ev-f50").value);if(f1>0&&ev.disc!=="50m")ev.fin10=f1;if(f2>0&&ev.disc!=="10m")ev.fin50=f2}
   const i=st.cal.events.findIndex(x=>x.id===was);
@@ -896,10 +1023,14 @@ document.addEventListener("change",e=>{
   const t=e.target;
   if(t.id==="ath-sel"){if(st.view==="squad")st.view="athlete";st.cur=t.value;st.sel=null;st.editing=null;st.confirmDel=null;lsSet("rsp-cur",st.cur);render();syncEvForm();return}
   if(t.id==="ev-type"||t.id==="ev-tier"||t.id==="ev-disc"){syncEvForm();return}
-  if(t.id==="ev-start"){const e0=$("ev-end");if(t.value&&(!e0.value||e0.value<t.value))e0.value=t.value;syncEvForm();return}
+  if(t.id==="ev-start"||t.id==="ev-end"){const e0=$("ev-end"),s0=$("ev-start");if(t.id==="ev-start"&&t.value&&(!e0.value||e0.value<t.value))e0.value=t.value;
+    const fc=$("ev-fc");if(fc&&!fc.value)fc.value=bestFeedComp(s0.value,e0.value,$("ev-disc").value);syncEvForm();return}
   if(t.dataset.pick){const id=t.dataset.pick,on=t.checked;mutate(a=>{a.picks=a.picks||{};a.picks[id]=Object.assign({},a.picks[id],{on})});return}
   if(t.dataset.ptier){const id=t.dataset.ptier,ev=st.cal.events.find(x=>x.id===id),v=t.value;mutate(a=>{const k=a.picks[id];if(ev&&v===ev.tier)delete k.tier;else k.tier=v;if(v!=="peak")delete k.taper});return}
   if(t.dataset.ptaper){const id=t.dataset.ptaper,v=parseInt(t.value);mutate(a=>{const k=a.picks[id];if(v>=1)k.taper=clamp(v,1,4);else delete k.taper});return}
+  if(t.dataset.fgmain){const id=t.dataset.fgmain;mutate(a=>{a.fgMain=id});return}
+  if(t.dataset.fg){const[id,f]=t.dataset.fg.split("|"),v=t.value;mutate(a=>{a.fgoals=Object.assign({},a.fgoals);a.fgoals[a.seasonStart]=(a.fgoals[a.seasonStart]||[]).map(g=>{if(g.id!==id)return g;const n=Object.assign({},g,{[f]:f==="conf"?+v:v});
+      if(f==="ev"){const E=st.feed&&st.feed.events[v];if(E&&!E.bench[n.compId])n.compId=""}return n})});return}
   if(t.dataset.gmain){const id=t.dataset.gmain;mutate(a=>{const G=sgW(a);G.list=(G.list||[]).map(g=>Object.assign({},g,{main:g.id===id}))});return}
   if(t.dataset.g2){const[id,f]=t.dataset.g2.split("|"),v=t.value.trim();mutate(a=>{const G=sgW(a);G.list=(G.list||[]).map(g=>{if(g.id!==id)return g;const n=Object.assign({},g);
       if(f==="target"||f==="cur"){if(v==="")delete n[f];else n[f]=+v}else n[f]=v;
@@ -915,6 +1046,7 @@ document.addEventListener("change",e=>{
   if(t.dataset.res){const[id,k]=t.dataset.res.split("|"),v=t.value.trim();mutate(a=>{a.results=Object.assign({},a.results);const r=a.results[id]=Object.assign({},a.results[id]);if(v)r[k]=k==="q10"||k==="q50"?+v:v;else delete r[k];if(!Object.keys(r).length)delete a.results[id]});return}
   if(t.dataset.fin){const v=clamp(parseFloat(t.value)||0,0,100);mutate(a=>{a.settings=a.settings||{};a.settings.finals=Object.assign({},a.settings.finals,{[t.dataset.fin]:v})});return}
   if(t.dataset.p){const k=t.dataset.p;let v=t.value;
+    if(k==="issfId"){v=v.trim().toUpperCase().replace(/\s+/g,"");mutate(a=>{if(!v){delete a.issfId;return}a.issfId=v;if(genderOf(v)&&!a.birthYear)a.birthYear=+v.slice(10,14)});return}
     if(k==="birthYear"){v=parseInt(v);mutate(a=>{if(v>=1940&&v<=2020)a.birthYear=v;else delete a.birthYear});return}
     if(k==="seasonStart"&&v){mutate(a=>{const old=a.seasonStart;a.seasons=seasonsOf(a).filter(q=>q.start!==old&&q.start!==v);if(a.goals&&a.goals[old]!=null&&a.goals[v]==null){a.goals=Object.assign({},a.goals,{[v]:a.goals[old]});delete a.goals[old]}a.seasonStart=v});st.sel=null;render();return}
     if(k==="name"){v=v.trim();if(!v){render();return}}
@@ -932,5 +1064,5 @@ document.addEventListener("change",e=>{
     mutate(a=>{a.settings=a.settings||{};const sp=a.settings.split=a.settings.split||{};sp[p]=Object.assign({},DEF.split[p],sp[p]||{});sp[p][k]=v});syncEvForm()}
 });
 let rz;window.addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{if(st.mode!=="loading"&&cur()&&!document.activeElement.matches("input,select")){render();syncEvForm()}},200)});
-if(typeof module!=="undefined"&&module.exports)module.exports={plan,focus};else boot().then(syncEvForm);
+if(typeof module!=="undefined"&&module.exports)module.exports={plan,focus,goalCalc,assembleFeed,st};else boot().then(syncEvForm);
 </script>
