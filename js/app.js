@@ -11,6 +11,8 @@ const st = {
   feed: null,
   checksOpen: (v => (v == null ? null : v === "1"))(lsGet0("rsp-checks")),
   dl: null,
+  sample: null,
+  review: null,
   restore: null,
   bkMsg: "",
   view: "athlete",
@@ -218,6 +220,13 @@ async function boot() {
     if (cd.exists) st.cal = cp(cd.data());
     if (fd) st.feed = assembleFeed(fd.docs.map(d => ({ id: d.id, data: cp(d.data()) })));
     finish("db");
+    window.claude.use("sample").then(
+      d => {
+        st.sample = d;
+        render();
+      },
+      () => {},
+    );
     window.claude.use("downloads").then(
       d => {
         st.dl = d;
@@ -854,6 +863,137 @@ function flagsHtml(P) {
     open = st.checksOpen != null ? st.checksOpen : nW > 0;
   return `<section class="panel"><details id="checks" class="checks"${open ? " open" : ""}><summary><h2>Checks on this plan</h2>${nW ? `<span class="pill" style="border-color:var(--warn);color:var(--warn)">${nW} conflict${nW === 1 ? "" : "s"}</span>` : `<span class="pill rate-ok">No conflicts</span>`}${nI ? `<span class="muted">${nI} note${nI === 1 ? "" : "s"}</span>` : ""}</summary>${P.flags.length ? `<ul class="flags">${P.flags.map(f => `<li class="${f.lv}"><span class="tag">${f.lv === "warn" ? "Conflict" : "Note"}${f.w != null ? " · wk " + (f.w + 1) : ""}</span>${esc(f.t)}${f.d ? `<details class="why"><summary>Why the plan looks like this</summary><ul>${f.d.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:0">No conflicts. Every peak has a full build, taper and recovery.</p>`}</details></section>`;
 }
+/* ---------- weekly log ---------- */
+const LOGF = {
+  fatigue: [["fresh", "Fresh"], ["normal", "Normal"], ["tired", "Tired"], ["very", "Very tired"]],
+  health: [["fine", "Fine"], ["niggle", "Niggle"], ["ill", "Ill"], ["injured", "Injured"]],
+  tech: [["good", "Good"], ["mixed", "Mixed"], ["poor", "Poor"]],
+  perf: [["good", "Good"], ["mixed", "Mixed"], ["poor", "Poor"]],
+};
+const WORKED = [["ar", "Air rifle"], ["k", "Kneeling"], ["p", "Prone"], ["s", "Standing"], ["fin", "Finals"], ["phys", "Physical"], ["ment", "Mental"]];
+function logHtml(w, P) {
+  const k = iso(w.start),
+    l = w.log || {},
+    logged = Object.keys(l).length > 0,
+    sel = (f, lab, opts) =>
+      `<label class="f">${lab}<select id="lg-${k}-${f}" data-log="${k}|${f}"><option value="">—</option>${opts.map(([v, t]) => `<option value="${v}"${String(l[f] || "") === String(v) ? " selected" : ""}>${t}</option>`).join("")}</select></label>`,
+    box = (f, v, t) =>
+      `<label class="chk"><input type="checkbox" id="lc-${k}-${f}-${v}" data-logc="${k}|${f}|${v}"${(l[f] || []).includes(v) ? " checked" : ""}> ${t}</label>`;
+  return `<details class="log"${logged || (P.wn || {})[k] ? " open" : ""}><summary>Week log${logged ? " · logged" : ""}</summary>
+    <div class="row" style="gap:6px 10px">
+      ${sel("load", "Load felt", Array.from({ length: 10 }, (_, i) => [i + 1, `${i + 1}${i === 0 ? " very easy" : i === 9 ? " maximal" : ""}`]))}
+      ${sel("fatigue", "Fatigue", LOGF.fatigue)}${sel("health", "Health", LOGF.health)}
+      ${sel("tech", "Technical work", LOGF.tech)}${sel("perf", "Scores", LOGF.perf)}
+    </div>
+    ${l.health === "niggle" || l.health === "injured" ? `<div class="row" style="gap:4px 12px;margin-top:4px"><span class="lab">Affects</span>${[["ar", "Air rifle"], ["k", "Kneeling"], ["p", "Prone"], ["s", "Standing"]].map(([v, t]) => box("affects", v, t)).join("")}</div>` : ""}
+    <div class="row" style="gap:4px 12px;margin-top:4px"><span class="lab">Worked on</span>${WORKED.map(([v, t]) => box("worked", v, t)).join("")}</div>
+    <label class="f" style="margin-top:6px">What we did and how it went<textarea id="wn-${k}" data-wn="${k}" rows="3" maxlength="2000" placeholder="Sessions, what worked, what didn't, anything to remember">${esc((P.wn || {})[k] || "")}</textarea></label>
+    <p class="muted" style="margin:4px 0 0;font-size:12px">The ratings adjust next week's plan. The text is read only when you ask Claude to review the block.</p></details>`;
+}
+function logAdjHtml(w) {
+  if (!w.logAdj || !w.logAdj.length) return "";
+  return `<div class="logadj"><span class="lab">From last week's log</span>${w.logAdj
+    .map(x => `<div class="${x.ign ? "ign" : ""}">${esc(x.text)} <button class="link" data-act="log-ign" data-id="${esc(x.key)}">${x.ign ? "Apply again" : "Ignore"}</button></div>`)
+    .join("")}</div>`;
+}
+
+/* ---------- block review by Claude (on request; proposals need the coach's approval) ---------- */
+function reviewWindow(P, bi) {
+  const b = P.blocks[bi],
+    nb = P.blocks[bi + 1],
+    now = mondayOf(Date.now()),
+    first = Math.max(b.start, Math.min(P.N - 1, Math.max(0, Math.floor((now - P.s0) / WEEK)))),
+    last = (nb ? nb.start + nb.len : b.start + b.len) - 1;
+  return { first: Math.min(first, last), last };
+}
+function reviewPrompt(a, P, bi) {
+  const b = P.blocks[bi],
+    pb = P.blocks[bi - 1],
+    R = reviewWindow(P, bi),
+    from = pb ? pb.start : b.start,
+    wk = w => ({
+      week: iso(w.start),
+      phase: PH[w.phase].n,
+      weekType: w.type,
+      volumePercent: w.load,
+      hours: w.hours,
+      intensity: w.inten,
+      finalsHours: Math.round(w.split.fin * 10) / 10,
+      liveShots10m: w.shots10,
+      liveShots50m: w.shots50,
+      events: w.events.map(e => `${e.name} (${e.type === "comp" ? (e.training ? "training match" : tierLab[e.tier].toLowerCase() + " competition") : e.type === "camp" ? "camp" : "holiday"})`),
+      log: w.log || null,
+      coachNotes: (P.wn || {})[iso(w.start)] || null,
+      adjustmentsFromLog: w.logAdj.filter(x => !x.ign).map(x => x.text),
+      setByHand: !!w.manual,
+    }),
+    now = Date.now(),
+    comps = P.evs
+      .filter(e => e.type === "comp" && e.en >= now && e.st <= now + 16 * WEEK)
+      .map(e => ({ eventId: e.id, name: e.name, start: iso(e.st), discipline: e.disc, priority: e.training ? "training match" : tierLab[e.tier].toLowerCase() })),
+    fg = P.fg;
+  const data = {
+    athlete: a.name,
+    today: iso(now),
+    strongerDiscipline: a.strength || "balanced",
+    blockBeingReviewed: `weeks ${b.start + 1}-${b.start + b.len}, ${b.pattern}`,
+    weeks: P.W.slice(from, R.last + 1).map(wk),
+    upcomingCompetitions: comps,
+    seasonGoal: fg ? { competition: fg.b.comp, outcome: fg.g.out, levelNow: fg.fa.meanNow, levelNeeded: fg.need, chanceOfFinal: Math.round(fg.pF * 100) + "%" } : null,
+  };
+  return `You are helping an elite rifle coach (10m air rifle and 50m rifle 3 positions) adjust a periodised training plan.
+Below is the plan for the previous block, this block and the next one, with the coach's weekly logs. Log fields: load = how hard the week felt (1-10), fatigue (fresh/normal/tired/very), health (fine/niggle/ill/injured, with affected positions), tech = how the technical work went, perf = how the scores went, worked = what was worked on (ar air rifle, k kneeling, p prone, s standing, fin finals, phys physical, ment mental). The planner has already applied "adjustmentsFromLog".
+
+Review how the block is going and propose at most 5 changes, only where the logs and notes give a reason. You may:
+- change a week between ${iso(P.W[R.first].start)} and ${iso(P.W[R.last].start)} (week start dates as given): volumePercent 0-110, intensity 1-10, or phase (PP1 general preparation, PP2 specific preparation, COMP competition, AREC active recovery);
+- change the priority of an upcoming competition (minor, major, key, peak);
+- add a note for the coach.
+Do not repeat changes the planner has already made. Keep each reason to one sentence a coach would accept. If nothing needs changing, return an empty proposals list and say so in the summary.
+
+Reply with only JSON in this shape:
+{"summary":"two or three sentences","proposals":[{"kind":"week","week":"YYYY-MM-DD","volumePercent":70,"intensity":5,"phase":"PP2","reason":"..."},{"kind":"priority","eventId":"...","priority":"minor","reason":"..."},{"kind":"note","text":"..."}]}
+Leave out fields you do not want to change.
+
+Plan and logs:
+${JSON.stringify(data)}`;
+}
+function cleanProposals(raw, a, P, bi) {
+  const R = reviewWindow(P, bi),
+    weeks = new Set(P.W.slice(R.first, R.last + 1).map(w => iso(w.start))),
+    TI = { minor: "small", major: "major", key: "key", peak: "peak" },
+    ticked = new Set(P.evs.filter(e => e.type === "comp" && !e.training).map(e => e.id)),
+    out = [];
+  (Array.isArray(raw && raw.proposals) ? raw.proposals : []).slice(0, 5).forEach(p => {
+    if (!p || typeof p !== "object") return;
+    if (p.kind === "week" && weeks.has(p.week)) {
+      const c = {};
+      if (p.volumePercent != null && isFinite(+p.volumePercent)) c.load = clamp(Math.round(+p.volumePercent), 0, 110);
+      if (p.intensity != null && isFinite(+p.intensity)) c.inten = clamp(Math.round(+p.intensity), 1, 10);
+      if (["PP1", "PP2", "COMP", "AREC"].includes(p.phase)) c.phase = p.phase;
+      if (Object.keys(c).length) out.push({ id: uid(), kind: "week", week: p.week, c, reason: String(p.reason || "").slice(0, 300) });
+    } else if (p.kind === "priority" && ticked.has(p.eventId) && TI[p.priority]) {
+      out.push({ id: uid(), kind: "priority", eventId: p.eventId, tier: TI[p.priority], reason: String(p.reason || "").slice(0, 300) });
+    } else if (p.kind === "note" && p.text) out.push({ id: uid(), kind: "note", text: String(p.text).slice(0, 400) });
+  });
+  return out;
+}
+function reviewHtml(a, P) {
+  const R = st.review;
+  if (!R || R.aid !== st.cur || R.bkey !== iso(P.W[P.blocks[st.sel].start].start)) return "";
+  if (R.status === "thinking") return `<div class="review"><span class="lab">Review by Claude</span><p style="margin:4px 0 0">Thinking… This can take up to a minute. <button class="link" data-act="review-stop">Stop</button></p></div>`;
+  if (R.status === "error") return `<div class="review"><span class="lab">Review by Claude</span><p style="margin:4px 0 0">${esc(R.msg)}</p></div>`;
+  const ev = id => P.evs.find(e => e.id === id),
+    lab = p =>
+      p.kind === "week"
+        ? `Week of ${fmt(parse(p.week))}: ${[p.c.phase ? PH[p.c.phase].n : "", p.c.load != null ? `volume ${p.c.load}%` : "", p.c.inten != null ? `intensity ${p.c.inten}/10` : ""].filter(Boolean).join(", ")}`
+        : p.kind === "priority"
+          ? `${esc((ev(p.eventId) || {}).name || "Competition")}: make it ${tierLab[p.tier].toLowerCase()}`
+          : "Note";
+  return `<div class="review"><span class="lab">Review by Claude</span><p style="margin:4px 0 6px">${esc(R.summary || "")}</p>
+    ${R.proposals.length ? `<ul class="sugg">${R.proposals.map(p => `<li class="${p.done ? "good" : ""}"><strong>${lab(p)}</strong>${p.kind === "note" ? `<div>${esc(p.text)}</div>` : `<div>${esc(p.reason)}</div>`}
+      <div class="row" style="margin-top:6px;gap:6px">${p.done ? `<span class="pill rate-ok">${p.done}</span>` : `${p.kind === "note" ? "" : `<button data-act="rv-accept" data-id="${p.id}">Accept</button>`}<button class="link" data-act="rv-dismiss" data-id="${p.id}">Dismiss</button>`}</div></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">No changes proposed.</p>`}
+    <p class="muted" style="margin:6px 0 0;font-size:12px">Accepted week changes become hand adjustments, which you can undo in the week card. Priority changes apply to ${esc(a.name)} only.</p></div>`;
+}
 function blockHtml(P) {
   const b = P.blocks[st.sel],
     ws = P.W.slice(b.start, b.start + b.len),
@@ -866,7 +1006,8 @@ function blockHtml(P) {
     ["rec", "crec", "Recovery"],
   ];
   return `<section class="panel"><div class="hd"><div><div class="lab">Block ${st.sel + 1} of ${P.blocks.length} · ${esc(b.pattern)}</div><h2>${nm}, weeks ${b.start + 1}–${b.start + b.len} <span class="muted" style="font-weight:500">${range(ws[0].start, ws[ws.length - 1].start + 6 * DAY)}</span></h2></div>
-  <div class="row">${Object.keys(P.adj).length ? `<button class="link" data-act="adj-clear-all">Clear all ${Object.keys(P.adj).length} hand adjustments</button>` : ""}<button data-act="blk-prev"${st.sel === 0 ? " disabled" : ""}>← Previous block</button><button data-act="blk-next"${st.sel === P.blocks.length - 1 ? " disabled" : ""}>Next block →</button></div></div>
+  <div class="row">${Object.keys(P.adj).length ? `<button class="link" data-act="adj-clear-all">Clear all ${Object.keys(P.adj).length} hand adjustments</button>` : ""}${st.sample ? `<button data-act="review"${st.review && st.review.status === "thinking" ? " disabled" : ""}>Review this block with Claude</button>` : ""}<button data-act="blk-prev"${st.sel === 0 ? " disabled" : ""}>← Previous block</button><button data-act="blk-next"${st.sel === P.blocks.length - 1 ? " disabled" : ""}>Next block →</button></div></div>
+  ${reviewHtml(cur(), P)}
   ${
     P.fg
       ? (() => {
@@ -899,7 +1040,8 @@ function blockHtml(P) {
     <ul>${focus(w, P)
       .map(t => `<li>${esc(t)}</li>`)
       .join("")}</ul>
-    <label class="f">Note for this week<textarea id="wn-${iso(w.start)}" data-wn="${iso(w.start)}" rows="2" maxlength="600" placeholder="Anything to remember about this week">${esc((P.wn || {})[iso(w.start)] || "")}</textarea></label>
+    ${logAdjHtml(w)}
+    ${w.start <= Date.now() ? logHtml(w, P) : `<label class="f">Note for this week<textarea id="wn-${iso(w.start)}" data-wn="${iso(w.start)}" rows="2" maxlength="600" placeholder="Anything to remember about this week">${esc((P.wn || {})[iso(w.start)] || "")}</textarea></label>`}
     ${(k => {
       const j = P.adj[k] || {},
         o = (v, l) => `<option value="${v}"${(j.phase || "auto") === v ? " selected" : ""}>${l}</option>`;
@@ -1128,6 +1270,80 @@ document.addEventListener("click", e => {
     lsSet("rsp-cur", id);
     render();
     window.scrollTo(0, 0);
+    return;
+  }
+  if (act === "log-ign") {
+    mutate(a => {
+      a.logIgnore = Object.assign({}, a.logIgnore);
+      if (a.logIgnore[id]) delete a.logIgnore[id];
+      else a.logIgnore[id] = 1;
+    });
+    return;
+  }
+  if (act === "review") {
+    const a0 = cur(),
+      P0 = plan(view(a0));
+    P0.fg = mainGoal(a0);
+    const bi = st.sel,
+      R = { aid: st.cur, bkey: iso(P0.W[P0.blocks[bi].start].start), status: "thinking", ctl: new AbortController() };
+    st.review = R;
+    render();
+    st.sample
+      .json(reviewPrompt(a0, P0, bi), { signal: R.ctl.signal, modelTier: "default" })
+      .then(
+        res => {
+          if (st.review !== R) return;
+          R.status = "done";
+          R.summary = String((res && res.summary) || "").slice(0, 800);
+          R.proposals = cleanProposals(res, a0, P0, bi);
+          render();
+        },
+        er => {
+          if (st.review !== R) return;
+          const c = er && er.code,
+            M = {
+              cancelled: "Review stopped.",
+              not_granted: "Asking Claude was not allowed in this view.",
+              rate_limited: "Too many requests just now. Try again in a minute.",
+              invalid_json: "Claude's answer could not be read. Try again.",
+              prompt_too_large: "There is too much in this block to send. Shorten the week notes and try again.",
+            };
+          R.status = "error";
+          R.msg = M[c] || `Claude could not review the block${c ? " (" + c + ")" : ""}.`;
+          render();
+        },
+      );
+    return;
+  }
+  if (act === "review-stop") {
+    if (st.review && st.review.ctl) st.review.ctl.abort();
+    return;
+  }
+  if (act === "rv-dismiss" || act === "rv-accept") {
+    const R = st.review,
+      p = R && R.proposals && R.proposals.find(x => x.id === id);
+    if (!p) return;
+    if (act === "rv-dismiss") {
+      R.proposals = R.proposals.filter(x => x !== p);
+      render();
+      return;
+    }
+    if (p.kind === "week")
+      mutate(a => {
+        a.adj = Object.assign({}, a.adj);
+        a.adj[p.week] = Object.assign({}, a.adj[p.week], p.c);
+      });
+    else if (p.kind === "priority") {
+      const ev = st.cal.events.find(e => e.id === p.eventId);
+      mutate(a => {
+        const k = (a.picks[p.eventId] = Object.assign({}, a.picks[p.eventId]));
+        if (ev && ev.tier === p.tier) delete k.tier;
+        else k.tier = p.tier;
+        if (p.tier !== "peak") delete k.taper;
+      });
+    }
+    p.done = "Accepted";
+    render();
     return;
   }
   if (act === "bk-save") {
@@ -1523,6 +1739,23 @@ document.addEventListener("change", e => {
       a.seasons = l;
       a.seasonStart = x.start;
       a.weeks = x.weeks;
+    });
+    return;
+  }
+  if (t.dataset.log || t.dataset.logc) {
+    const [k, f, v] = (t.dataset.log || t.dataset.logc).split("|");
+    mutate(a => {
+      a.wlog = Object.assign({}, a.wlog);
+      const l = (a.wlog[k] = Object.assign({}, a.wlog[k]));
+      if (t.dataset.logc) {
+        const arr = (l[f] || []).filter(x => x !== v);
+        if (t.checked) arr.push(v);
+        if (arr.length) l[f] = arr;
+        else delete l[f];
+      } else if (t.value === "") delete l[f];
+      else l[f] = f === "load" ? +t.value : t.value;
+      if (f === "health" && l.health !== "niggle" && l.health !== "injured") delete l.affects;
+      if (!Object.keys(l).length) delete a.wlog[k];
     });
     return;
   }

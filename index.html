@@ -149,6 +149,14 @@ details.checks[open]>summary::before{transform:rotate(90deg)}
 @media (prefers-reduced-motion:reduce){details.checks>summary::before{transition:none}}
 details.checks>summary h2{display:inline}
 details.checks[open]>summary{margin-bottom:10px}
+details.log{border-top:1px solid var(--line);padding-top:6px}
+details.log>summary{font-family:var(--body);font-size:12.5px;font-weight:600;color:var(--accent)}
+details.log[open]>summary{margin-bottom:6px}
+details.log select{font-size:12.5px;padding:4px 6px}
+details.log .chk{font-size:12.5px;padding:0}
+.logadj{background:var(--warn-bg);border-left:4px solid var(--warn);border-radius:4px;padding:6px 8px;font-size:12.5px;display:flex;flex-direction:column;gap:3px}
+.logadj .ign{text-decoration:line-through;color:var(--muted)}
+.review{background:var(--info-bg);border-left:4px solid var(--accent);border-radius:4px;padding:8px 11px;margin-bottom:10px;max-width:120ch}
 details.why{margin-top:5px}
 details.why>summary{font-family:var(--body);font-size:12.5px;font-weight:500;color:var(--accent)}
 details.why[open]>summary{margin-bottom:5px}

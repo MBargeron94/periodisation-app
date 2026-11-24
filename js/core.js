@@ -631,6 +631,90 @@ function plan(a) {
     if (tr <= 1 && w.type !== "Peak competition" && w.type !== "Key competition") w.type = "Competition week";
   });
 
+  /* weekly log: what the coach recorded about a week adjusts the following week.
+     Each adjustment is listed on that week's card and can be ignored; hand adjustments still win. */
+  const LOG = a.wlog || {},
+    IGN = a.logIgnore || {},
+    POSN = { ar: "air rifle", k: "kneeling", p: "prone", s: "standing" },
+    tiredL = l => l && (l.fatigue === "tired" || l.fatigue === "very");
+  W.forEach(w => {
+    w.log = LOG[iso(w.start)] || null;
+    w.logAdj = [];
+  });
+  const adjust = (n, from, rule, text, fn) => {
+    if (!n || n.phase === "HOL") return;
+    const key = iso(n.start) + "|" + rule,
+      ign = !!IGN[key];
+    n.logAdj.push({ key, rule, text, ign, from: from.i });
+    if (!ign && fn) fn(n);
+  };
+  W.forEach(w => {
+    const l = w.log,
+      n = W[w.i + 1];
+    if (!l || !n) return;
+    const aff = (l.affects || []).filter(x => POSN[x]),
+      affT = aff.length ? ` (${aff.map(x => POSN[x]).join(", ")})` : "";
+    let cut = false;
+    if (l.health === "ill") {
+      cut = true;
+      adjust(n, w, "ill", "Ill last week: volume capped at 50%, intensity at most 4, no finals work.", x => {
+        x.load = Math.min(x.load, 50);
+        x.inten = Math.min(x.inten, 4);
+        x.noFin = true;
+      });
+    } else if (l.health === "injured") {
+      cut = true;
+      adjust(n, w, "injured", `Injured last week${affT}: volume capped at 70%${aff.length ? ", and the affected shooting is left out" : ""}.`, x => {
+        x.load = Math.min(x.load, 70);
+        x.avoid = aff;
+      });
+    } else if (l.health === "niggle") {
+      cut = true;
+      adjust(n, w, "niggle", `A niggle last week${affT}: volume capped at 85%${aff.length ? ", and the affected shooting is halved" : ""}.`, x => {
+        x.load = Math.min(x.load, 85);
+        x.reduce = aff;
+      });
+    }
+    const prev = W[w.i - 1] && W[w.i - 1].log;
+    if ((tiredL(l) && tiredL(prev)) || (l.fatigue === "very" && +l.load >= 8)) {
+      cut = true;
+      adjust(n, w, "fatigue", tiredL(prev) ? "Tired two weeks running: next week becomes a deload." : "Very tired after a hard week: next week becomes a deload.", x => {
+        x.load = Math.min(x.load, Math.max(50, r5(x.load * 0.7)));
+        x.inten = Math.max(1, x.inten - 1);
+        if (x.phase === "PP1" || x.phase === "PP2") x.type = "Deload";
+      });
+    }
+    const exp = Math.round(w.load / 10);
+    if (+l.load > 0 && w.load > 0) {
+      if (+l.load >= exp + 3 || (+l.load >= 9 && +l.load >= exp + 2)) {
+        cut = true;
+        adjust(n, w, "harder", `The week felt much harder than planned (${l.load}/10 against about ${exp}/10): next week's volume is down 15%.`, x => {
+          x.load = r5(x.load * 0.85);
+        });
+      } else if (!cut && +l.load <= exp - 3 && (l.fatigue === "fresh" || l.fatigue === "normal") && (l.health || "fine") === "fine" &&
+        (n.phase === "PP1" || n.phase === "PP2") && !/Deload|Taper|Step-down|Easy/.test(n.type)) {
+        adjust(n, w, "easier", `The week felt easier than planned (${l.load}/10 against about ${exp}/10) and the athlete is fresh: next week steps up 10%.`, x => {
+          x.load = Math.min(100, r5(x.load * 1.1));
+        });
+      }
+    }
+    if (l.tech === "good" && l.perf === "poor" && l.health !== "ill")
+      adjust(n, w, "transfer", "Technique went well but the scores did not: next week has more competition simulations and finals, with match routines and mental work.", x => {
+        x.finBoost = true;
+      });
+    else if (l.tech === "poor")
+      adjust(n, w, "technical", `Technical work did not go well${l.perf === "poor" ? ", and neither did the scores" : ""}: next week leans to technical work, with half the finals and slightly lower intensity.`, x => {
+        x.techFocus = true;
+        x.inten = Math.max(1, x.inten - 1);
+      });
+    /* positions not worked on in two logged build weeks running (3P athletes) */
+    if (prev && l.worked && prev.worked && (w.phase === "PP1" || w.phase === "PP2")) {
+      const miss = ["k", "p", "s"].filter(x => !l.worked.includes(x) && !prev.worked.includes(x));
+      if (miss.length && miss.length < 3 && (l.worked.some(x => ["k", "p", "s"].includes(x)) || prev.worked.some(x => ["k", "p", "s"].includes(x))))
+        adjust(n, w, "coverage", `${miss.map(x => POSN[x][0].toUpperCase() + POSN[x].slice(1)).join(" and ")} ${miss.length > 1 ? "have" : "has"} not been worked on for two logged weeks: plan some time for ${miss.length > 1 ? "them" : "it"} next week.`, null);
+    }
+  });
+
   /* hand adjustments: volume and intensity */
   W.forEach(w => {
     w.autoLoad = w.load;
@@ -674,6 +758,11 @@ function plan(a) {
     if (w.phase === "PP1" && (a.strength === "10m" || a.strength === "50m"))
       sh = clamp(sh + (a.strength === "10m" ? -0.1 : 0.1), 0.2, 0.8);
     w.share10 = sh;
+    const off = x => (w.avoid || []).includes(x),
+      half = x => (w.reduce || []).includes(x);
+    if (off("ar")) w.share10 = 0;
+    else if (off("k") && off("p") && off("s")) w.share10 = 1;
+    else if (half("ar")) w.share10 = w.share10 / 2;
     w.target = tgt;
     w.hours = Math.round(((hmax * w.load) / 100) * 2) / 2;
     const sp = S.split[w.phase] || { sport: 0, phys: 0, mental: 0, rec: 1 },
@@ -701,16 +790,19 @@ function plan(a) {
             : w.phase === "PP2"
               ? "pp2"
               : "pp1";
-    w.split.fin = w.finKind
-      ? ((w.split.t10 + w.split.t50) * clamp(+S.finals[w.finKind] || 0, 0, 100)) / 100
-      : 0;
+    w.split.fin =
+      w.finKind && !w.noFin
+        ? ((w.split.t10 + w.split.t50) * clamp((+S.finals[w.finKind] || 0) + (w.finBoost ? 10 : 0), 0, 100)) / 100
+        : 0;
+    if (w.techFocus) w.split.fin /= 2;
     const so = S.shots,
       pf = w.phase === "PP1" ? 0.8 : 1,
       r10 = v => Math.round(v / 10) * 10,
-      pt = (+so.k || 0) + (+so.p || 0) + (+so.s || 0) || 1;
+      wt = x => (+so[x] || 0) * ((w.avoid || []).includes(x) ? 0 : (w.reduce || []).includes(x) ? 0.5 : 1),
+      pt = wt("k") + wt("p") + wt("s") || 1;
     w.shots10 = r10(w.split.t10 * (+so.r10 || 0) * pf);
-    const ps = (sh2, rate) => r5(((w.split.t50 * (+sh2 || 0)) / pt) * (+rate || 0) * pf);
-    w.pos = { k: ps(so.k, so.rk), p: ps(so.p, so.rp), s: ps(so.s, so.rs) };
+    const ps = (x, rate) => r5(((w.split.t50 * wt(x)) / pt) * (+rate || 0) * pf);
+    w.pos = { k: ps("k", so.rk), p: ps("p", so.rp), s: ps("s", so.rs) };
     w.shots50 = w.pos.k + w.pos.p + w.pos.s;
     w.units = (w.shots10 + w.shots50) * w.inten;
   });
@@ -964,6 +1056,9 @@ function focus(w, P) {
       "Finals: short, sharp finals at competition intensity. Rehearse the walk-in, the presentation and the first shots.",
   };
   if (w.finKind && w.split.fin >= 0.25) out.push(FT[w.finKind]);
+  if (w.techFocus) out.push("Technical emphasis from the log: isolated elements, dry firing and holding; judge sessions on process.");
+  if (w.finBoost) out.push("Transfer from the log: competition simulations, full finals and match routines under some pressure.");
+  if ((w.avoid || []).length || (w.reduce || []).length) out.push("Health from the log: adjust sessions around the affected positions and check with the medical team before loading them again.");
   if (w.manual)
     out.push("This week has been adjusted by hand, so its figures differ from the automatic plan.");
   if (has("Key event"))

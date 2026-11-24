@@ -21,6 +21,10 @@ Data lives in the artifact's database:
 
 When the database is not available the page falls back to browser storage. The Backup panel downloads all athletes and the calendar as JSON and restores from such a file.
 
+## Weekly log
+
+Each started week has a log: load felt (1-10), fatigue, health (with affected positions), how the technical work went, how the scores went, what was worked on, and free text. The ratings adjust the following week through fixed rules in `plan()` (`js/core.js`), listed on that week's card where each can be ignored. Hand adjustments win over the log. The free text is only read when the coach asks Claude to review a block (the `sample` capability); Claude's proposals change nothing until the coach accepts them, and accepted week changes become hand adjustments.
+
 ## Tests
 
 ```
@@ -32,7 +36,7 @@ The first checks the planning logic and the feed formulas on made-up data. The s
 
 ## Updating the published page
 
-Edit the files, run the tests, then publish `index.html` with `js/core.js`, `js/feed.js` and `js/app.js` as supporting files to the same artifact from a Claude Code session, so the link stays the same. The artifact declares the `db` (with the `feed` write rule), `user` and `downloads` capabilities.
+Edit the files, run the tests, then publish `index.html` with `js/core.js`, `js/feed.js` and `js/app.js` as supporting files to the same artifact from a Claude Code session, so the link stays the same. The artifact declares the `db` (with the `feed` write rule), `user`, `downloads` and `sample` capabilities.
 
 ## Rankings feed
 

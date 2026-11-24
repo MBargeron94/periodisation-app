@@ -74,6 +74,41 @@ check("a key event too close to a peak gets a note, not a conflict",
   P2.flags.some(f => f.lv === "info" && /Late key is a key event, but/.test(f.t)) && !P2.flags.some(f => f.lv === "warn" && /Late key/.test(f.t)));
 check("a key event too close to a peak does not reshape the phases", P2.W.filter(w => w.keyEv && w.keyEv.id === "k2").length === 0);
 
+/* ---------- weekly log rules ---------- */
+const withLog = (wlog, extra) => plan(Object.assign({}, athlete, { wlog }, extra || {}));
+const base = plan(athlete);
+const at = (Q, d) => Q.W[Math.floor((parse(d) - Q.s0) / (7 * 864e5))];
+check("test weeks are build weeks", ["2027-01-11", "2027-01-18", "2027-01-25", "2027-02-01"].every(d => /PP/.test(at(base, d).phase)),
+  ["2027-01-11", "2027-01-18", "2027-01-25", "2027-02-01"].map(d => at(base, d).phase));
+let Q = withLog({ "2027-01-11": { health: "ill" } });
+check("ill: next week capped at 50% with no finals", at(Q, "2027-01-18").load <= 50 && at(Q, "2027-01-18").inten <= 4 && at(Q, "2027-01-18").split.fin === 0,
+  [at(Q, "2027-01-18").load, at(Q, "2027-01-18").inten, at(Q, "2027-01-18").split.fin]);
+check("ill: the adjustment is listed on next week's card", at(Q, "2027-01-18").logAdj.some(x => x.rule === "ill"));
+Q = withLog({ "2027-01-11": { health: "ill" } }, { logIgnore: { "2027-01-18|ill": 1 } });
+check("an ignored adjustment is not applied", at(Q, "2027-01-18").load === at(base, "2027-01-18").load && at(Q, "2027-01-18").logAdj[0].ign);
+Q = withLog({ "2027-01-11": { fatigue: "tired" }, "2027-01-18": { fatigue: "very" } });
+check("tired two weeks running: next week is a deload", at(Q, "2027-01-25").type === "Deload" && at(Q, "2027-01-25").load < at(base, "2027-01-25").load,
+  [at(Q, "2027-01-25").type, at(Q, "2027-01-25").load, at(base, "2027-01-25").load]);
+check("one tired week alone changes nothing", at(withLog({ "2027-01-11": { fatigue: "tired" } }), "2027-01-18").load === at(base, "2027-01-18").load);
+Q = withLog({ "2027-01-11": { health: "injured", affects: ["k"] } });
+check("injured kneeling: no kneeling shots next week", at(Q, "2027-01-18").pos.k === 0 && at(Q, "2027-01-18").load <= 70, at(Q, "2027-01-18").pos);
+Q = withLog({ "2027-01-11": { tech: "good", perf: "poor" } });
+check("good technique, poor scores: more finals next week", at(Q, "2027-01-18").split.fin > at(base, "2027-01-18").split.fin);
+Q = withLog({ "2027-01-11": { tech: "poor" } });
+check("poor technique: fewer finals and lower intensity next week",
+  at(Q, "2027-01-18").split.fin < at(base, "2027-01-18").split.fin && at(Q, "2027-01-18").inten < at(base, "2027-01-18").inten);
+const expL = Math.round(at(base, "2027-01-11").load / 10);
+Q = withLog({ "2027-01-11": { load: Math.min(10, expL + 3) } });
+check("felt much harder than planned: next week down 15%", at(Q, "2027-01-18").load < at(base, "2027-01-18").load);
+Q = withLog({ "2027-01-11": { load: Math.max(1, expL - 3), fatigue: "fresh", health: "fine" } });
+const nx = at(base, "2027-01-18");
+check("felt easier and fresh: next week steps up, unless it is a lighter week",
+  /Deload|Taper|Step-down|Easy/.test(nx.type) ? at(Q, "2027-01-18").load === nx.load : at(Q, "2027-01-18").load > nx.load, [nx.type, nx.load, at(Q, "2027-01-18").load]);
+Q = withLog({ "2027-01-11": { worked: ["k", "s"] }, "2027-01-18": { worked: ["k", "s", "ar"] } });
+check("a position not worked on for two logged weeks is noted", at(Q, "2027-01-25").logAdj.some(x => x.rule === "coverage" && /Prone/.test(x.text)));
+check("hand adjustments win over the log",
+  at(withLog({ "2027-01-11": { health: "ill" } }, { adj: { "2027-01-18": { load: 90 } } }), "2027-01-18").load === 90);
+
 /* ---------- feed maths against the README formulas ---------- */
 /* reference normal CDF by numerical integration, independent of the page's approximation */
 function PhiRef(x) {
