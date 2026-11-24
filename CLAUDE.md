@@ -26,13 +26,13 @@ A season-planning web app for an elite rifle coach (Swiss national team level: W
 
 - `athletes/<id>`: one document per athlete. Main fields: `name`, `issfId`, `birthYear`, `strength`, `seasonStart`, `weeks`, `hoursMax`, `seasons`, `settings` (taper, recovery, splits, finals shares, shot rates), `picks` (per calendar event: `on`, own `tier`, `taper`), `adj` (hand adjustments by week start date), `weekNotes`, `wlog` (weekly logs), `logIgnore`, `results`, `fgoals` (goals per season), `fgMain`, `training` (training scores), `notes`, `sessions` (week planner: by week start date, a list of `{id, day 0–6 from Monday, ampm, type t10|t50|phys|mental|rec, dur hours, shots (10m), k/p/s (50m), fin, loc, note}`).
 - `shared/calendar`: `{events: [...]}`, shared by all athletes. Event types: `comp` (tier `small` = minor, `major`, `key`, `peak`; `training: true` for training matches; `feedComp` = linked ISSF competition id), `camp`, `hol`.
-- `feed/meta` and `feed/<EVENT>-<n>`: the rankings-feed copy. Only Owners and Editors can write `feed` (access rule).
+- `feed/meta` and `feed/<EVENT>-<n>`: the rankings-feed copy. Only the artifact's owner (the coach) can read or write `athletes` and write `shared` and `feed` (access rules, since athletes were shared the page as Editors). Someone who can read no athletes and is not the owner sees a "Your plan is not linked yet" page.
 
 Write to these with the ArtifactData tool, always pinned with `if_version` to the version you read. Take a fresh read first: the coach edits the page between sessions.
 
 ## Publishing
 
-Publish `index.html` with `files` = `js/core.js`, `js/feed.js`, `js/app.js` (and `root` = this repository) to the artifact URL above, so the link stays the same. Capabilities to keep: `db` with rule `{path: "feed", read: "view", write: "admin"}`, `user`, `downloads`, `sample`. Restate all of them whenever you pass `capabilities`, or omit the field to keep them. Commit and push to `main` after each publish.
+Publish `index.html` with `files` = `js/core.js`, `js/feed.js`, `js/app.js` (and `root` = this repository) to the artifact URL above, so the link stays the same. Capabilities to keep: `db` with rules `{path: "athletes", read: "owner", write: "owner"}`, `{path: "shared", read: "view", write: "owner"}`, `{path: "feed", read: "view", write: "owner"}`, plus `user`, `downloads`, `sample`. Restate all of them whenever you pass `capabilities`, or omit the field to keep them. Commit and push to `main` after each publish.
 
 ## Feed refresh (on request only)
 
@@ -66,6 +66,8 @@ No token is used anywhere: the session's GitHub access reads the repo, and the p
 - A standalone web app (own hosting and logins) is deferred until someone other than the coach needs access.
 
 ## Open items and ideas
+
+- Athlete access (in progress): the coach is on an individual plan and shares the page with athletes by email as Editor. Next step: an `athletes/{self}` rule, a "Link to an account" button for the coach (user search, scope profile) that moves an athlete's record to `athletes/<their user id>`, and an athlete mode showing only their own plan; athletes may change competition picks and priorities (peak, key...), week-planner sessions and the weekly log only. Known limits: an Editor can publish a new version with Claude and loosen the rules; outside Editors lose write access while the page is also shared by public link (it was shared by link when the lock-down was published).
 
 - Week planner: drafting rules are simple (one rest day in a full week, range in the mornings, physical and recovery in the afternoons, a short range session the day before a competition). The coach has not used it yet; expect changes to the draft after first use. Planned sessions are not sent to the Claude block review.
 

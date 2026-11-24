@@ -30,6 +30,7 @@ const st = {
   copyFrom: "",
   adding: false,
   mode: "loading",
+  locked: false,
 };
 let db = null,
   chain = Promise.resolve(),
@@ -223,6 +224,17 @@ async function boot() {
     });
     if (cd.exists) st.cal = cp(cd.data());
     if (fd) st.feed = assembleFeed(fd.docs.map(d => ({ id: d.id, data: cp(d.data()) })));
+    /* nothing readable: either a new owner, or someone the access rules keep out until their plan is linked */
+    if (!snap.docs.length) {
+      st.locked = true;
+      window.claude.use("user").then(
+        u => {
+          st.locked = !(u && u.isOwner());
+          render();
+        },
+        () => {},
+      );
+    }
     finish("db");
     window.claude.use("sample").then(
       d => {
@@ -251,6 +263,13 @@ const hrs = v => (Math.round(v * 2) / 2).toFixed(1).replace(".0", "");
 const discLab = { "10m": "10m", "50m": "50m 3P", both: "10m + 50m" },
   tierLab = { small: "Minor", major: "Major", key: "Key", peak: "Peak" };
 function render() {
+  if (st.locked) {
+    $("notice").innerHTML = "";
+    $("athbar").innerHTML = "";
+    $("app").innerHTML =
+      `<div class="panel empty"><h2>Your plan is not linked yet</h2><p>Your coach has shared the planner with you, but has not yet linked your own plan to your account. Once they have, it will appear here. You will only ever see your own plan.</p></div>`;
+    return;
+  }
   const ids = Object.keys(st.athletes).sort((x, y) => st.athletes[x].name.localeCompare(st.athletes[y].name)),
     a = cur();
   $("notice").innerHTML =
