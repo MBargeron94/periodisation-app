@@ -9,6 +9,7 @@ function lsGet0(k) {
 }
 const st = {
   feed: null,
+  checksOpen: (v => (v == null ? null : v === "1"))(lsGet0("rsp-checks")),
   dl: null,
   restore: null,
   bkMsg: "",
@@ -848,7 +849,10 @@ function squadHtml(ids) {
   <div class="tw"><table><thead><tr><th>Athlete</th><th>Phase and week</th><th>Volume</th><th>Hours</th><th>Next peak</th><th>Goal this month</th><th>Checks</th><th></th></tr></thead><tbody>${tbl}</tbody></table></div></section>`;
 }
 function flagsHtml(P) {
-  return `<section class="panel"><div class="hd"><h2>Checks on this plan</h2></div>${P.flags.length ? `<ul class="flags">${P.flags.map(f => `<li class="${f.lv}"><span class="tag">${f.lv === "warn" ? "Conflict" : "Note"}${f.w != null ? " · wk " + (f.w + 1) : ""}</span>${esc(f.t)}${f.d ? `<details class="why"><summary>Why the plan looks like this</summary><ul>${f.d.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:0">No conflicts. Every peak has a full build, taper and recovery.</p>`}</section>`;
+  const nW = P.flags.filter(f => f.lv === "warn").length,
+    nI = P.flags.length - nW,
+    open = st.checksOpen != null ? st.checksOpen : nW > 0;
+  return `<section class="panel"><details id="checks" class="checks"${open ? " open" : ""}><summary><h2>Checks on this plan</h2>${nW ? `<span class="pill" style="border-color:var(--warn);color:var(--warn)">${nW} conflict${nW === 1 ? "" : "s"}</span>` : `<span class="pill rate-ok">No conflicts</span>`}${nI ? `<span class="muted">${nI} note${nI === 1 ? "" : "s"}</span>` : ""}</summary>${P.flags.length ? `<ul class="flags">${P.flags.map(f => `<li class="${f.lv}"><span class="tag">${f.lv === "warn" ? "Conflict" : "Note"}${f.w != null ? " · wk " + (f.w + 1) : ""}</span>${esc(f.t)}${f.d ? `<details class="why"><summary>Why the plan looks like this</summary><ul>${f.d.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:0">No conflicts. Every peak has a full build, taper and recovery.</p>`}</details></section>`;
 }
 function blockHtml(P) {
   const b = P.blocks[st.sel],
@@ -1394,6 +1398,16 @@ document.addEventListener("submit", e => {
   saveCal();
   render();
 });
+/* remember whether the checks panel was left open (toggle does not bubble, so listen while capturing) */
+document.addEventListener(
+  "toggle",
+  e => {
+    if (e.target.id !== "checks") return;
+    st.checksOpen = e.target.open;
+    lsSet("rsp-checks", e.target.open ? "1" : "0");
+  },
+  true,
+);
 document.addEventListener("change", e => {
   const t = e.target;
   if (t.id === "bk-file") {
