@@ -1116,3 +1116,193 @@ function focus(w, P) {
   };
   return out.concat(F[w.phase]);
 }
+
+/* ================= week planner: individual sessions inside a week ================= */
+const SESS = {
+  t10: { n: "10m range", s: "10m", c: "c10" },
+  t50: { n: "50m 3P range", s: "50m", c: "c50" },
+  phys: { n: "Physical", s: "Phys", c: "cphys" },
+  mental: { n: "Mental", s: "Mental", c: "cment" },
+  rec: { n: "Recovery", s: "Rec", c: "crec" },
+};
+const DAYN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/* what each day of a week holds: holiday wins over competition, as in plan() */
+function weekDays(w) {
+  return DAYN.map((n, i) => {
+    const d = w.start + i * DAY,
+      on = t => w.events.filter(e => e.type === t && e.st <= d && e.en >= d),
+      h = on("hol"),
+      c = on("comp"),
+      k = on("camp");
+    return { i, d, n, kind: h.length ? "hol" : c.length ? "comp" : null, ev: h[0] || c[0] || null, camp: k[0] || null };
+  });
+}
+/* planned totals of a list of sessions, in the same units as the week's targets */
+function sessTotals(list) {
+  const t = { t10: 0, t50: 0, phys: 0, mental: 0, rec: 0, hours: 0, shots10: 0, k: 0, p: 0, s: 0, fin: 0 };
+  (list || []).forEach(x => {
+    const d = +x.dur || 0;
+    if (t[x.type] != null) t[x.type] += d;
+    t.hours += d;
+    if (x.type === "t10") t.shots10 += +x.shots || 0;
+    if (x.type === "t50") ["k", "p", "s"].forEach(q => (t[q] += +x[q] || 0));
+    if (x.fin && (x.type === "t10" || x.type === "t50")) t.fin++;
+  });
+  return t;
+}
+const finTarget = w => (w.split.fin >= 0.25 ? Math.max(1, Math.round(w.split.fin / 0.75)) : 0);
+const DNOTE = {
+  PP1: {
+    t10: "Technical: isolated elements, holding, dry firing",
+    t50: "Position work, one position at a time",
+    phys: "Strength and aerobic base; trunk and stabilisers first",
+    mental: "Relaxation training, goal setting",
+    rec: "Mobility and stretching",
+  },
+  PP2: {
+    t10: "Full 60-shot match or match blocks",
+    t50: "Full 3-position course with changeovers and sighter timing",
+    phys: "Strength maintenance",
+    mental: "Concentration, visualisation, match script",
+    rec: "Mobility and stretching",
+  },
+  COMP: {
+    t10: "Short and sharp: competition warm-up and match routine",
+    t50: "Short 3P match routine, changeover timings",
+    phys: "Light aerobic work, activation",
+    mental: "Competition visualisation and routines",
+    rec: "Mobility, sleep and recovery routine",
+  },
+  REC: {
+    t10: "Light shooting, no score pressure",
+    t50: "Light shooting, no score pressure",
+    phys: "Free recreational sport",
+    mental: "Competition analysis once emotions have settled",
+    rec: "Wellness and rest",
+  },
+  AREC: {
+    t10: "Light shooting, no score pressure",
+    t50: "Light shooting, no score pressure",
+    phys: "Fun recreational sport and light extensive training",
+    mental: "Competition analysis and goals for the next cycle",
+    rec: "Mobility and stretching",
+  },
+};
+/* a draft of the week's sessions that adds up to the week's targets. The coach edits it afterwards. */
+function draftWeek(w, P) {
+  const days = weekDays(w),
+    free = days.filter(x => !x.kind);
+  if (!free.length || !(w.hours > 0)) return [];
+  const compI = days.filter(x => x.kind === "comp").map(x => x.i),
+    afterC = new Set(compI.map(i => i + 1)),
+    beforeC = new Set(compI.map(i => i - 1));
+  let train = free.slice(),
+    rest = null;
+  if (train.length >= 6) {
+    rest = train.find(x => x.i === 6) || train[train.length - 1];
+    train = train.filter(x => x !== rest);
+  }
+  const ph = DNOTE[w.phase] ? w.phase : "PP1",
+    short = ph === "COMP",
+    len = { t10: short ? 1.5 : 2.5, t50: short ? 2 : 3, phys: short ? 0.75 : 1.25, mental: 0.75, rec: 0.75 },
+    q = v => Math.round(v * 4) / 4,
+    cap = { t10: train.length * 2, t50: train.length * 2, phys: train.length, mental: train.length, rec: free.length };
+  /* split each category into sessions; the last one takes the rounding so the total matches */
+  const pieces = k => {
+    const H = w.split[k] || 0;
+    if (H < 0.4) return [];
+    const n = clamp(Math.round(H / len[k]) || 1, 1, Math.max(1, cap[k])),
+      each = Math.max(0.25, q(H / n)),
+      out = Array(n).fill(each);
+    out[n - 1] = Math.max(0.25, q(H - each * (n - 1)));
+    return out;
+  };
+  let seq = 0;
+  const id = () => "d" + Date.now().toString(36) + (seq++).toString(36) + Math.random().toString(36).slice(2, 5),
+    out = [],
+    mk = (type, dur, day, ampm) => {
+      const s = { id: id(), day: day.i, ampm, type, dur, loc: day.camp ? day.camp.name : "", note: DNOTE[ph][type] };
+      if (w.techFocus && (type === "t10" || type === "t50")) s.note = "Technical emphasis: isolated elements, dry firing, holding";
+      if (beforeC.has(day.i) && (type === "t10" || type === "t50")) s.note = "Day before the competition: short session, confidence shots";
+      if (afterC.has(day.i) && type === "rec") s.note = "Easy day after the competition";
+      out.push(s);
+      return s;
+    },
+    /* spread n items over a list of days as evenly as possible */
+    spread = (list, n) => Array.from({ length: n }, (_, j) => list[Math.floor((j * list.length) / n) % list.length]);
+  /* range sessions: mornings first, days straight after a competition last; extra sessions go to afternoons */
+  const rDays = train.filter(x => !afterC.has(x.i)).concat(train.filter(x => afterC.has(x.i))),
+    r10 = pieces("t10"),
+    r50 = pieces("t50"),
+    range = [];
+  while (r10.length || r50.length) {
+    if (r10.length) range.push(["t10", r10.shift()]);
+    if (r50.length) range.push(["t50", r50.shift()]);
+  }
+  const rs = [];
+  if (range.length && rDays.length) {
+    /* the day before a competition always gets a (short) range session if there is one to place */
+    const am = Math.min(range.length, rDays.length),
+      must = rDays.filter(x => beforeC.has(x.i)).slice(0, am),
+      other = rDays.filter(x => !must.includes(x)),
+      amDays = must.concat(spread(other, am - must.length)).sort((x, y) => x.i - y.i),
+      pmDays = spread(rDays, range.length - am).sort((x, y) => x.i - y.i);
+    range.forEach(([t, d], j) => rs.push(mk(t, d, j < am ? amDays[j] : pmDays[j - am], j < am ? "am" : "pm")));
+  }
+  /* keep the session before a competition short: move its extra time to another session of the same kind */
+  rs.filter(x => beforeC.has(x.day) && x.dur > 1.5).forEach(x => {
+    const o = rs.filter(y => y.type === x.type && !beforeC.has(y.day)).sort((p, q) => p.dur - q.dur)[0];
+    if (!o) return;
+    o.dur += x.dur - 1.5;
+    x.dur = 1.5;
+  });
+  /* physical in the afternoon, on days without afternoon range work where possible */
+  const pmBusy = new Set(rs.filter(x => x.ampm === "pm").map(x => x.day)),
+    ph1 = pieces("phys"),
+    pFree = train.filter(x => !pmBusy.has(x.i)),
+    pDays = pFree.length >= ph1.length ? pFree : train;
+  if (pDays.length) spread(pDays, ph1.length)
+    .sort((x, y) => x.i - y.i)
+    .forEach((d, j) => mk("phys", ph1[j], d, "pm"));
+  /* mental straight after a morning range session; recovery in the afternoon, the day after a competition first */
+  const me = pieces("mental"),
+    rangeAm = [...new Set(rs.filter(x => x.ampm === "am").map(x => x.day))].map(i => days[i]),
+    mDays = rangeAm.length ? rangeAm : train;
+  if (mDays.length) spread(mDays, me.length)
+    .sort((x, y) => x.i - y.i)
+    .forEach((d, j) => mk("mental", me[j], d, "am"));
+  const re = pieces("rec"),
+    recDays = train
+      .filter(x => afterC.has(x.i))
+      .concat(train.filter(x => !afterC.has(x.i)).reverse());
+  if (recDays.length) recDays
+    .slice(0, re.length)
+    .concat(spread(recDays, Math.max(0, re.length - recDays.length)))
+    .slice(0, re.length)
+    .sort((x, y) => x.i - y.i)
+    .forEach((d, j) => mk("rec", re[j], d, "pm"));
+  /* shots by session length; the last session takes the rounding so the week's totals match */
+  const share = (list, total, field, step) => {
+    if (!list.length) return;
+    const H = list.reduce((s, x) => s + x.dur, 0) || 1;
+    let left = total;
+    list.forEach((x, j) => {
+      const v = j === list.length - 1 ? left : Math.round((total * x.dur) / H / step) * step;
+      x[field] = Math.max(0, Math.min(v, left));
+      left -= x[field];
+    });
+  };
+  const s10 = out.filter(x => x.type === "t10"),
+    s50 = out.filter(x => x.type === "t50");
+  share(s10, w.shots10 || 0, "shots", 10);
+  ["k", "p", "s"].forEach(k => share(s50, (w.pos || {})[k] || 0, k, 5));
+  /* finals: the week's number of finals on the last range sessions of the week */
+  const nf = finTarget(w),
+    ord = (x, y) => x.day - y.day || (x.ampm === y.ampm ? 0 : x.ampm === "am" ? -1 : 1);
+  rs.slice()
+    .sort(ord)
+    .reverse()
+    .slice(0, nf)
+    .forEach(x => (x.fin = true));
+  return out.sort((x, y) => ord(x, y) || Object.keys(SESS).indexOf(x.type) - Object.keys(SESS).indexOf(y.type));
+}

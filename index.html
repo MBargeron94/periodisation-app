@@ -188,6 +188,34 @@ tr.off td{color:var(--muted)}
 label.chk{display:flex;align-items:center;gap:6px;font-size:13px;padding-bottom:6px}
 .empty{text-align:center;padding:36px 16px}
 .empty p{max-width:52ch;margin:8px auto 14px;color:var(--muted)}
+/* week planner */
+.wkc.open{outline:2px solid var(--accent);outline-offset:-1px}
+.wkbtn{align-self:flex-start;margin-top:6px;font-size:12.5px;padding:4px 10px}
+.wplan{margin-top:12px;border:1px solid var(--line);border-top:4px solid var(--accent);border-radius:4px;padding:12px;background:var(--surface);scroll-margin-top:12px}
+.wplan>.hd{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline;justify-content:space-between;margin-bottom:8px}
+.wptools{margin-bottom:8px}
+.wpask{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--warn-bg);border-left:4px solid var(--warn);border-radius:4px;padding:7px 10px;margin:6px 0}
+.wpgrid{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;align-items:start}
+.wpdays{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:4px;min-width:0}
+.wpday{display:grid;grid-template-columns:92px minmax(0,1fr) minmax(0,1fr);gap:6px 10px;padding:7px 9px;border-bottom:1px solid var(--line);align-items:start}
+.wpday:last-child{border-bottom:0}
+.wpday.blk{background:var(--sunken)}
+.wpd{font-size:13px}.wpd .muted{font-size:12px}
+.wpblk{grid-column:2/-1;font-size:12.5px;color:var(--muted)}
+.warnt{color:var(--warn)}
+.wpslot{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
+.wpslot>.lab{font-size:11px}
+.ses{display:flex;flex-direction:column;align-items:flex-start;gap:1px;width:100%;text-align:left;font-size:12.5px;padding:5px 8px;border:1px solid var(--line);border-left:5px solid var(--sc);border-radius:4px;background:var(--surface);cursor:pointer}
+.ses b{font-weight:600}.ses .muted{font-size:12px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ses.on{border-color:var(--accent);border-left-color:var(--sc);box-shadow:0 0 0 1px var(--accent)}
+.sesed{grid-column:1/-1;background:var(--info-bg);border-radius:4px;padding:9px 10px}
+.sesed .chk{font-size:12.5px;align-self:center}
+.wptot{font-size:12.5px}.wptot caption{text-align:left;padding-bottom:4px}
+.wptot th,.wptot td{padding:4px 6px}
+.wptot tbody th{font-family:var(--body);font-size:12.5px;text-transform:none;letter-spacing:0;color:var(--fg);font-weight:500}
+.wptot td{text-align:right}
+.wptot tr.off td{color:var(--warn);font-weight:600}
+@media (max-width:760px){.wpgrid{grid-template-columns:1fr}.wptot{order:-1}.wpday{grid-template-columns:1fr 1fr}.wpd,.wpblk{grid-column:1/-1}}
 </style>
 
 <div class="wrap">

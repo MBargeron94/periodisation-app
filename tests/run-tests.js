@@ -176,6 +176,45 @@ check("feed score found by dates and city", (feedScore(who, ev, F).q10 || {}).s 
 check("feed score not taken for another city", !feedScore(who, Object.assign({}, ev, { name: "National match" }), F).q10);
 check("feed score taken for a linked event", (feedScore(who, Object.assign({}, ev, { name: "WM", feedComp: "x" }), F).q10 || {}).s === 629.1);
 
+/* ---------- week planner: drafted sessions add up to the week's targets ---------- */
+{
+  const draftWeek = run("draftWeek"),
+    sessTotals = run("sessTotals"),
+    weekDays = run("weekDays"),
+    finTarget = run("finTarget");
+  let worstH = 0,
+    shotsOk = true,
+    blockedOk = true,
+    finOk = true,
+    restOk = true,
+    n = 0;
+  for (const w of P.W) {
+    const d = draftWeek(w, P),
+      T = sessTotals(d),
+      days = weekDays(w);
+    if (!(w.hours > 0)) {
+      if (d.length) blockedOk = false;
+      continue;
+    }
+    n++;
+    for (const k of ["t10", "t50", "phys", "mental", "rec"]) if (w.split[k] >= 0.4) worstH = Math.max(worstH, Math.abs(T[k] - w.split[k]));
+    if (T.shots10 !== w.shots10 && T.t10 > 0) shotsOk = false;
+    if (T.t50 > 0 && (T.k !== w.pos.k || T.p !== w.pos.p || T.s !== w.pos.s)) shotsOk = false;
+    if (d.some(x => days[x.day].kind)) blockedOk = false;
+    if (T.fin !== Math.min(finTarget(w), d.filter(x => x.type === "t10" || x.type === "t50").length)) finOk = false;
+    if (days.every(x => !x.kind) && new Set(d.map(x => x.day)).size > 6) restOk = false;
+  }
+  check(`drafted hours per category are within 15 minutes of the target (${n} weeks)`, worstH <= 0.25, worstH);
+  check("drafted shots add up exactly to the week's shots", shotsOk);
+  check("no drafted sessions on holiday or competition days", blockedOk);
+  check("drafted finals match the week's number of finals", finOk);
+  check("a full training week keeps one rest day", restOk);
+  const ew = wk("2027-03-08"),
+    ed = weekDays(ew);
+  check("competition days are marked in the peak week", ed.filter(x => x.kind === "comp").length === 5, ed.map(x => x.kind));
+  check("holiday days are marked", weekDays(wk("2026-12-21")).every(x => x.kind === "hol"));
+}
+
 /* ---------- optional: every athlete in the real feed against its own headline numbers ---------- */
 if (process.env.FEED_JSON) {
   const raw = JSON.parse(fs.readFileSync(process.env.FEED_JSON, "utf8"));

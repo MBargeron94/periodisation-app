@@ -24,6 +24,10 @@ const st = {
   sel: null,
   editing: null,
   confirmDel: null,
+  wk: null,
+  ses: null,
+  wkAsk: null,
+  copyFrom: "",
   adding: false,
   mode: "loading",
 };
@@ -1023,8 +1027,11 @@ function blockHtml(P) {
   <div class="weeks">${ws
     .map(w => {
       const tot = cats.reduce((s, c) => s + w.split[c[0]], 0) || 1;
-      return `<article class="wkc ${w.phase}">
-    <div><div class="lab num">Week ${w.i + 1} · ${range(w.start, w.start + 6 * DAY)}</div><div class="row" style="gap:5px;margin-top:4px"><span class="pill">${esc(w.type)}</span>${w.manual ? `<span class="pill" style="border-color:var(--accent);color:var(--accent)">Hand-set</span>` : ""}${w.tags.map(t => `<span class="pill">${esc(t)}</span>`).join("")}</div></div>
+      const nS = ((cur().sessions || {})[iso(w.start)] || []).length,
+        isOpen = st.wk === iso(w.start);
+      return `<article class="wkc ${w.phase}${isOpen ? " open" : ""}">
+    <div><div class="lab num">Week ${w.i + 1} · ${range(w.start, w.start + 6 * DAY)}</div>
+    <button class="${isOpen ? "pri " : ""}wkbtn" data-act="${isOpen ? "wk-close" : "wk-open"}" data-id="${iso(w.start)}" aria-expanded="${isOpen}">${isOpen ? "Close sessions" : nS ? `Sessions · ${nS} planned` : "Plan sessions"}</button><div class="row" style="gap:5px;margin-top:4px"><span class="pill">${esc(w.type)}</span>${w.manual ? `<span class="pill" style="border-color:var(--accent);color:var(--accent)">Hand-set</span>` : ""}${w.tags.map(t => `<span class="pill">${esc(t)}</span>`).join("")}</div></div>
     ${w.events.length ? `<div class="evl">${w.events.map(e => `<div><strong>${e.type === "camp" ? "Camp" : e.type === "hol" ? "Holiday" : tierLab[e.tier]}${e.type === "comp" && e.tier === "peak" ? " ★" : ""}:</strong> ${esc(e.name)} <span class="muted">${e.type === "comp" ? discLab[e.disc] + " · " : ""}${range(e.st, e.en)}</span></div>`).join("")}</div>` : ""}
     <div class="stats num"><div><span class="lab">Volume</span><b>${w.load}%</b></div><div><span class="lab">Hours</span><b>${hrs(w.hours)}</b></div><div><span class="lab">Intensity</span><b>${w.inten}/10</b></div></div>
     <div class="bar">${cats.map(c => `<span style="width:${(w.split[c[0]] / tot) * 100}%;background:var(--${c[1]})"></span>`).join("")}</div>
@@ -1056,7 +1063,106 @@ function blockHtml(P) {
       ${P.adj[k] ? `<button class="link" data-act="adj-clear" data-id="${k}">Back to the plan</button>` : ""}</div></details>`;
     })(iso(w.start))}</article>`;
     })
-    .join("")}</div></section>`;
+    .join("")}</div>${weekPlanHtml(cur(), P)}</section>`;
+}
+/* ---------- week planner: individual sessions inside one week ---------- */
+const AMPM = { am: "AM", pm: "PM" };
+const isRange = t => t === "t10" || t === "t50";
+/* hours to the nearest quarter, written as a coach would: 2 h 15, 45 min */
+const hm = v => {
+  const m = Math.round(((+v || 0) * 60) / 15) * 15,
+    h = Math.floor(m / 60),
+    r = m % 60;
+  return h ? `${h} h${r ? " " + r : ""}` : `${r} min`;
+};
+function weekPlanHtml(a, P) {
+  const w = st.wk && P.W.find(x => iso(x.start) === st.wk);
+  if (!w || w.block !== st.sel) return "";
+  const k = st.wk,
+    list = (a.sessions || {})[k] || [],
+    T = sessTotals(list),
+    days = weekDays(w),
+    prev = P.W[w.i - 1],
+    next = P.W[w.i + 1],
+    others = Object.keys(a.sessions || {})
+      .filter(x => x !== k && (a.sessions[x] || []).length)
+      .sort(),
+    wkLab = x => {
+      const ww = P.W.find(y => iso(y.start) === x);
+      return `${ww ? "Week " + (ww.i + 1) + " · " : ""}${range(parse(x), parse(x) + 6 * DAY)} (${a.sessions[x].length})`;
+    };
+  /* planned against the week's targets */
+  const rows = [
+    ...Object.keys(SESS).map(t => [SESS[t].n, T[t], w.split[t], "h"]),
+    ["Total hours", T.hours, w.hours, "h"],
+    ["10m shots", T.shots10, w.shots10, "s"],
+    ["Kneeling shots", T.k, w.pos.k, "s"],
+    ["Prone shots", T.p, w.pos.p, "s"],
+    ["Standing shots", T.s, w.pos.s, "s"],
+    ["Finals", T.fin, finTarget(w), "n"],
+  ].filter(r => r[1] > 0 || r[2] > 0.2);
+  const off = r =>
+      r[3] === "h" ? Math.abs(r[1] - r[2]) >= 0.5 : r[3] === "s" ? Math.abs(r[1] - r[2]) > Math.max(25, r[2] * 0.1) : r[1] !== r[2],
+    fmtv = (v, u) => (u === "h" ? hm(v) : String(Math.round(v)));
+  const ask = st.wkAsk
+    ? `<div class="wpask" role="alert">${
+        st.wkAsk === "draft"
+          ? `Replace the ${list.length} session${list.length === 1 ? "" : "s"} in this week with a fresh draft?`
+          : st.wkAsk === "copy"
+            ? `Replace the ${list.length} session${list.length === 1 ? "" : "s"} in this week with the ones from ${esc(wkLab(st.copyFrom))}?`
+            : `Delete all ${list.length} session${list.length === 1 ? "" : "s"} in this week?`
+      } <button class="pri" data-act="wk-yes">${st.wkAsk === "clear" ? "Delete them" : "Replace"}</button><button data-act="wk-no">Cancel</button></div>`
+    : "";
+  const chip = x =>
+    `<button class="ses${st.ses === x.id ? " on" : ""}" style="--sc:var(--${(SESS[x.type] || SESS.rec).c})" data-act="ses-edit" data-id="${esc(x.id)}" aria-expanded="${st.ses === x.id}">
+      <b>${esc((SESS[x.type] || SESS.rec).s)} · ${hm(x.dur)}</b>${x.type === "t10" && +x.shots ? ` <span class="num">${+x.shots} shots</span>` : ""}${x.type === "t50" && +x.k + +x.p + +x.s ? ` <span class="num">K ${+x.k || 0} · P ${+x.p || 0} · S ${+x.s || 0}</span>` : ""}${x.fin && isRange(x.type) ? ` <span class="pill">Final</span>` : ""}
+      ${x.loc || x.note ? `<span class="muted">${esc([x.loc, x.note].filter(Boolean).join(" · "))}</span>` : ""}</button>`;
+  const editor = x => {
+    const f = (fld, lab, inner) => `<label class="f">${lab}${inner}</label>`,
+      id = esc(x.id),
+      num = (fld, lab, step, max) =>
+        f(fld, lab, `<input id="se-${id}-${fld}" type="number" min="0" max="${max}" step="${step}" data-ses="${id}|${fld}" value="${x[fld] != null && x[fld] !== "" ? esc(x[fld]) : ""}">`);
+    return `<div class="sesed" id="sesed"><div class="row">
+      ${f("type", "Type", `<select id="se-${id}-type" data-ses="${id}|type">${Object.keys(SESS).map(t => `<option value="${t}"${x.type === t ? " selected" : ""}>${SESS[t].n}</option>`).join("")}</select>`)}
+      ${f("day", "Day", `<select id="se-${id}-day" data-ses="${id}|day">${days.map(d => `<option value="${d.i}"${+x.day === d.i ? " selected" : ""}>${d.n} ${fmt(d.d)}${d.kind ? (d.kind === "hol" ? " (holiday)" : " (competition)") : ""}</option>`).join("")}</select>`)}
+      ${f("ampm", "Time", `<select id="se-${id}-ampm" data-ses="${id}|ampm">${Object.keys(AMPM).map(t => `<option value="${t}"${x.ampm === t ? " selected" : ""}>${AMPM[t]}</option>`).join("")}</select>`)}
+      ${num("dur", "Hours", 0.25, 8)}
+      ${x.type === "t10" ? num("shots", "Shots", 5, 1000) : ""}
+      ${x.type === "t50" ? num("k", "Kneeling shots", 5, 500) + num("p", "Prone shots", 5, 500) + num("s", "Standing shots", 5, 500) : ""}
+      ${isRange(x.type) ? `<label class="chk"><input type="checkbox" id="se-${id}-fin" data-ses="${id}|fin"${x.fin ? " checked" : ""}> Includes a final</label>` : ""}
+      ${f("loc", "Location", `<input id="se-${id}-loc" maxlength="60" data-ses="${id}|loc" value="${esc(x.loc || "")}" placeholder="e.g. Magglingen">`)}
+    </div>
+    <label class="f" style="margin-top:6px">Content<textarea id="se-${id}-note" rows="2" maxlength="400" data-ses="${id}|note" placeholder="What the session is for and how it runs">${esc(x.note || "")}</textarea></label>
+    <div class="row" style="margin-top:6px"><button data-act="ses-done">Done</button><button data-act="ses-dup" data-id="${id}">Duplicate</button><button class="link" data-act="ses-del" data-id="${id}">Delete session</button></div></div>`;
+  };
+  const dayRow = d => {
+    const ds = list.filter(x => +x.day === d.i),
+      ed = ds.find(x => x.id === st.ses),
+      blocked = d.kind
+        ? `<div class="wpblk">${d.kind === "hol" ? "Holiday" : "Competition"}: ${esc(d.ev.name)}. Nothing is planned on this day.${ds.length ? ` <strong class="warnt">${ds.length} session${ds.length === 1 ? " is" : "s are"} still on it.</strong>` : ""}</div>`
+        : "",
+      slot = ap =>
+        `<div class="wpslot"><span class="lab">${AMPM[ap]}</span>${ds
+          .filter(x => (x.ampm || "am") === ap)
+          .map(chip)
+          .join("")}${d.kind ? "" : `<button class="link" data-act="ses-add" data-id="${d.i}|${ap}" aria-label="Add a ${AMPM[ap]} session on ${d.n}">+ Add</button>`}</div>`;
+    return `<div class="wpday${d.kind ? " blk" : ""}"><div class="wpd"><b>${d.n}</b> <span class="num">${fmt(d.d)}</span>${d.camp ? `<div class="muted">Camp: ${esc(d.camp.name)}</div>` : ""}</div>
+      ${d.kind && !ds.length ? blocked : `${blocked}${slot("am")}${slot("pm")}`}${ed ? editor(ed) : ""}</div>`;
+  };
+  return `<div class="wplan" id="wplan">
+    <div class="hd"><div><div class="lab">Sessions · ${esc(w.type)} · ${PH[w.phase] ? PH[w.phase].n : w.phase}</div><h3>Week ${w.i + 1}, ${range(w.start, w.start + 6 * DAY)}</h3></div>
+    <div class="row">${prev ? `<button data-act="wk-step" data-id="${iso(prev.start)}">← Week ${prev.i + 1}</button>` : ""}${next ? `<button data-act="wk-step" data-id="${iso(next.start)}">Week ${next.i + 1} →</button>` : ""}<button data-act="wk-close">Close</button></div></div>
+    <div class="row wptools"><button class="pri" data-act="wk-draft"${w.hours > 0 ? "" : " disabled"}>${list.length ? "Redraft this week" : "Draft this week"}</button>
+      ${others.length ? `<label class="f">Copy sessions from<select id="wk-copyfrom"><option value="">Choose a week</option>${others.map(x => `<option value="${x}"${st.copyFrom === x ? " selected" : ""}>${esc(wkLab(x))}</option>`).join("")}</select></label>${st.copyFrom ? `<button data-act="wk-copy">Copy</button>` : ""}` : ""}
+      ${list.length ? `<button class="link" data-act="wk-clear">Clear this week</button>` : ""}</div>
+    ${w.hours > 0 ? "" : `<p class="muted" style="margin:6px 0 0">No training hours are planned this week, so there is nothing to draft. You can still add sessions by hand.</p>`}
+    ${ask}
+    <div class="wpgrid"><div class="wpdays">${days.map(dayRow).join("")}</div>
+    <table class="wptot"><caption class="lab">Planned against this week's targets</caption><thead><tr><th></th><th class="num">Planned</th><th class="num">Target</th></tr></thead><tbody>${rows
+      .map(r => `<tr${off(r) ? ' class="off"' : ""}><th>${r[0]}</th><td class="num">${fmtv(r[1], r[3])}</td><td class="num">${fmtv(r[2], r[3])}</td></tr>`)
+      .join("")}</tbody></table></div>
+    <p class="muted" style="margin:6px 0 0;font-size:12px">Sessions do not change the week's targets: those come from the plan and your adjustments above. Rows in orange are more than half an hour, or more than 10% of the shots (at least 25), away from the target.</p>
+  </div>`;
 }
 function eventsHtml(a) {
   const ed = st.editing ? st.cal.events.find(e => e.id === st.editing) : null,
@@ -1214,6 +1320,117 @@ function syncEvForm() {
     e0 = $("ev-end");
   if (s0 && e0) e0.min = s0.value || "";
 }
+/* ---------- week planner actions ---------- */
+function setSessions(a, k, list) {
+  a.sessions = Object.assign({}, a.sessions);
+  if (list.length) a.sessions[k] = list;
+  else delete a.sessions[k];
+}
+function weekAct(act, id) {
+  const a = cur();
+  if (!a) return;
+  const P = plan(view(a)),
+    k = act === "wk-open" || act === "wk-step" ? id : st.wk,
+    w = P.W.find(x => iso(x.start) === k),
+    list = ((a.sessions || {})[k] || []).slice(),
+    newId = () => "s" + uid(),
+    show = sel => {
+      render();
+      const el = $(sel);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+  if (act === "wk-close") {
+    st.wk = st.ses = st.wkAsk = null;
+    render();
+    return;
+  }
+  if (!w) return;
+  if (act === "wk-open" || act === "wk-step") {
+    st.wk = k;
+    st.ses = st.wkAsk = null;
+    st.copyFrom = "";
+    if (w.block !== st.sel) {
+      st.sel = w.block;
+      st.jump = true;
+    }
+    show("wplan");
+    return;
+  }
+  const doIt = what => {
+    st.wkAsk = null;
+    st.ses = null;
+    mutate(b => {
+      if (what === "draft") setSessions(b, k, draftWeek(w, P).map(x => Object.assign(x, { id: newId() })));
+      else if (what === "copy")
+        setSessions(b, k, ((b.sessions || {})[st.copyFrom] || []).map(x => Object.assign({}, x, { id: newId() })));
+      else setSessions(b, k, []);
+    });
+  };
+  if (act === "wk-draft" || act === "wk-copy" || act === "wk-clear") {
+    const what = act.slice(3);
+    if (what === "copy" && !((a.sessions || {})[st.copyFrom] || []).length) return;
+    if (list.length) {
+      st.wkAsk = what;
+      render();
+    } else doIt(what);
+    return;
+  }
+  if (act === "wk-yes") {
+    if (st.wkAsk) doIt(st.wkAsk);
+    return;
+  }
+  if (act === "wk-no") {
+    st.wkAsk = null;
+    render();
+    return;
+  }
+  if (act === "ses-edit") {
+    st.ses = st.ses === id ? null : id;
+    show("sesed");
+    return;
+  }
+  if (act === "ses-done") {
+    st.ses = null;
+    render();
+    return;
+  }
+  if (act === "ses-add") {
+    const [d, ap] = id.split("|"),
+      day = weekDays(w)[+d],
+      rng = w.split.t10 + w.split.t50 > 0.2,
+      x = {
+        id: newId(),
+        day: +d,
+        ampm: ap,
+        type: rng ? (w.split.t10 >= w.split.t50 ? "t10" : "t50") : "phys",
+        dur: 1,
+        loc: day && day.camp ? day.camp.name : "",
+        note: "",
+      };
+    st.ses = x.id;
+    st.wkAsk = null;
+    const b = cur();
+    setSessions(b, k, list.concat([x]));
+    persist(st.cur);
+    show("sesed");
+    return;
+  }
+  if (act === "ses-dup") {
+    const x = list.find(y => y.id === id);
+    if (!x) return;
+    const c = Object.assign({}, x, { id: newId() });
+    st.ses = c.id;
+    const b = cur();
+    setSessions(b, k, list.concat([c]));
+    persist(st.cur);
+    show("sesed");
+    return;
+  }
+  if (act === "ses-del") {
+    st.ses = null;
+    mutate(b => setSessions(b, k, list.filter(y => y.id !== id)));
+  }
+}
 document.addEventListener("click", e => {
   const tl = e.target.closest("#tl");
   if (tl) {
@@ -1270,6 +1487,10 @@ document.addEventListener("click", e => {
     lsSet("rsp-cur", id);
     render();
     window.scrollTo(0, 0);
+    return;
+  }
+  if (act.startsWith("wk-") || act.startsWith("ses-")) {
+    weekAct(act, id);
     return;
   }
   if (act === "log-ign") {
@@ -1518,10 +1739,12 @@ document.addEventListener("click", e => {
     persist(i);
     render();
   } else if (act === "blk-prev") {
+    st.wk = st.ses = st.wkAsk = null;
     st.sel = Math.max(0, st.sel - 1);
     st.jump = true;
     render();
   } else if (act === "blk-next") {
+    st.wk = st.ses = st.wkAsk = null;
     st.sel++;
     st.jump = true;
     render();
@@ -1654,6 +1877,7 @@ document.addEventListener("change", e => {
     if (st.view === "squad") st.view = "athlete";
     st.cur = t.value;
     st.sel = null;
+    st.wk = st.ses = st.wkAsk = null;
     st.editing = null;
     st.confirmDel = null;
     lsSet("rsp-cur", st.cur);
@@ -1739,6 +1963,33 @@ document.addEventListener("change", e => {
       a.seasons = l;
       a.seasonStart = x.start;
       a.weeks = x.weeks;
+    });
+    return;
+  }
+  if (t.id === "wk-copyfrom") {
+    st.copyFrom = t.value;
+    st.wkAsk = null;
+    render();
+    return;
+  }
+  if (t.dataset.ses) {
+    const [sid, f] = t.dataset.ses.split("|"),
+      k = st.wk;
+    mutate(a => {
+      const list = ((a.sessions || {})[k] || []).map(x => Object.assign({}, x)),
+        x = list.find(y => y.id === sid);
+      if (!x) return;
+      if (f === "fin") x.fin = t.checked;
+      else if (f === "loc" || f === "note") x[f] = t.value.trim();
+      else if (f === "type" || f === "ampm") x[f] = t.value;
+      else if (f === "day") x.day = clamp(parseInt(t.value) || 0, 0, 6);
+      else if (f === "dur") x.dur = clamp(Math.round((parseFloat(t.value) || 0) * 4) / 4, 0, 8);
+      else if (t.value === "") delete x[f];
+      else x[f] = clamp(Math.round(+t.value) || 0, 0, 1000);
+      if (x.type !== "t10") delete x.shots;
+      if (x.type !== "t50") ["k", "p", "s"].forEach(q => delete x[q]);
+      if (!isRange(x.type)) delete x.fin;
+      setSessions(a, k, list);
     });
     return;
   }
