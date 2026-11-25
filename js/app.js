@@ -190,7 +190,8 @@ function startSync() {
     );
 }
 /* ---------- linking an athlete's plan to their account ---------- */
-const CODE_CH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+/* letters only, so any phone keyboard works; no I or O, which look like 1 and 0 */
+const CODE_CH = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const newCode = () =>
   Array.from(crypto.getRandomValues(new Uint32Array(6)), n => CODE_CH[n % CODE_CH.length]).join("");
 const isLinked = id => /^u_/.test(id || "");
@@ -457,7 +458,7 @@ function render() {
     $("app").innerHTML = `<div class="panel empty"><h2>Your plan is not linked yet</h2>${
       st.me
         ? `<p>Your coach gives you a 6-letter link code. Enter it here once. Your plan then appears on this page, usually within a few seconds; your coach's planner needs to be open somewhere for the link to complete. You only ever see your own plan.</p>
-      <form id="claim-form" class="row" style="justify-content:center"><label class="f">Link code<input id="claim-code" maxlength="6" autocomplete="off" style="width:110px;text-transform:uppercase;letter-spacing:.12em" required></label><button class="pri" type="submit">Link my plan</button></form>
+      <form id="claim-form" class="row" style="justify-content:center"><label class="f">Link code<input id="claim-code" type="text" inputmode="text" maxlength="6" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="go" style="width:110px;text-transform:uppercase;letter-spacing:.12em" required></label><button class="pri" type="submit">Link my plan</button></form>
       ${st.claimMsg ? `<p role="status" style="margin-top:10px">${esc(st.claimMsg)}</p>` : ""}`
         : `<p>Your account could not be identified in this view. Open the planner in the Claude app or on claude.ai while signed in.</p>`
     }</div>`;
