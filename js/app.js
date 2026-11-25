@@ -30,7 +30,18 @@ const st = {
   copyFrom: "",
   adding: false,
   mode: "loading",
-  locked: false,
+  /* who is viewing: "coach" (the page owner, or browser-only mode), "athlete" (sees only their own linked plan),
+     "locked" (shared the page but no plan linked to them yet) */
+  role: "coach",
+  user: null,
+  me: null,
+  names: {},
+  claims: [],
+  claimMsg: "",
+  privNotes: {},
+  pend: {},
+  inflight: {},
+  needRender: false,
 };
 let db = null,
   chain = Promise.resolve(),
@@ -62,19 +73,172 @@ function persist(id) {
   }
   clearTimeout(timers[id]);
   setSave("Saving…");
+  st.pend[id] = true;
   timers[id] = setTimeout(() => {
-    const doc = st.athletes[id];
+    st.pend[id] = false;
+    st.inflight[id] = (st.inflight[id] || 0) + 1;
     chain = chain
-      .then(() =>
-        doc
-          ? db.doc("athletes/" + id).set(JSON.parse(JSON.stringify(doc)))
-          : db.doc("athletes/" + id).delete(),
-      )
+      .then(() => writeAthlete(id, st.athletes[id]))
       .then(
         () => setSave("Saved"),
         e => setSave("Could not save: " + ((e && e.message) || "storage refused the change")),
-      );
+      )
+      .then(() => {
+        st.inflight[id]--;
+      });
   }, 500);
+}
+/* the coach's notes on an athlete live in private/<id>, which only the page owner can read;
+   everything else lives in athletes/<id>, which a linked athlete can read too */
+async function writeAthlete(id, doc) {
+  if (!doc) {
+    await db.doc("athletes/" + id).delete();
+    if (st.role === "coach") await db.doc("private/" + id).delete();
+    return;
+  }
+  const pub = JSON.parse(JSON.stringify(doc)),
+    notes = pub.notes || "";
+  delete pub.notes;
+  if (st.role === "coach" && notes !== (st.privNotes[id] || "")) {
+    await db.doc("private/" + id).set({ notes });
+    st.privNotes[id] = notes;
+  }
+  await db.doc("athletes/" + id).set(pub);
+}
+/* key-order-independent comparison, so a copy that comes back from the database is not mistaken for a change */
+const stable = v =>
+  Array.isArray(v)
+    ? "[" + v.map(stable).join(",") + "]"
+    : v && typeof v === "object"
+      ? "{" + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ":" + stable(v[k])).join(",") + "}"
+      : JSON.stringify(v);
+/* re-render after a change from elsewhere, but never while someone is typing */
+function remoteRender() {
+  const ae = document.activeElement;
+  if (ae && ae.matches && ae.matches("input,textarea,select")) {
+    st.needRender = true;
+    return;
+  }
+  render();
+}
+document.addEventListener("focusout", () =>
+  setTimeout(() => {
+    const ae = document.activeElement;
+    if (st.needRender && !(ae && ae.matches && ae.matches("input,textarea,select"))) {
+      st.needRender = false;
+      render();
+    }
+  }, 0),
+);
+/* live copies: the coach and an athlete can have the same plan open at once */
+function startSync() {
+  if (!db) return;
+  const cp = o => JSON.parse(JSON.stringify(o));
+  db.collection("athletes").onSnapshot(
+    snap => {
+      let ch = false;
+      const seen = new Set(),
+        busy = id => st.pend[id] || st.inflight[id] > 0;
+      snap.docs.forEach(d => {
+        seen.add(d.id);
+        if (busy(d.id)) return;
+        const nd = cp(d.data()),
+          old = st.athletes[d.id];
+        if (st.role === "coach" && old && old.notes != null && nd.notes == null) nd.notes = old.notes;
+        if (!old || stable(old) !== stable(nd)) {
+          st.athletes[d.id] = nd;
+          ch = true;
+        }
+      });
+      Object.keys(st.athletes).forEach(id => {
+        if (!seen.has(id) && !busy(id)) {
+          delete st.athletes[id];
+          ch = true;
+        }
+      });
+      if (!ch) return;
+      if (st.role !== "coach") {
+        const mine = Object.keys(st.athletes)[0] || null;
+        st.role = mine ? "athlete" : "locked";
+        if (st.cur !== mine) {
+          st.cur = mine;
+          st.sel = null;
+          st.wk = st.ses = null;
+        }
+      } else if (!st.athletes[st.cur]) st.cur = Object.keys(st.athletes)[0] || null;
+      remoteRender();
+    },
+    () => {},
+  );
+  db.doc("shared/calendar").onSnapshot(
+    d => {
+      if (st.pend.__cal || st.inflight.__cal > 0) return;
+      const c = d.exists ? cp(d.data()) : { events: [] };
+      if (!Array.isArray(c.events) || stable(c) === stable(st.cal)) return;
+      st.cal = c;
+      remoteRender();
+    },
+    () => {},
+  );
+  if (st.role === "coach")
+    db.collection("claims").onSnapshot(
+      snap => {
+        st.claims = snap.docs.map(d => ({ id: d.id, code: String((d.data() || {}).code || "").toUpperCase().trim() }));
+        processClaims();
+      },
+      () => {},
+    );
+}
+/* ---------- linking an athlete's plan to their account ---------- */
+const CODE_CH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const newCode = () =>
+  Array.from(crypto.getRandomValues(new Uint32Array(6)), n => CODE_CH[n % CODE_CH.length]).join("");
+const isLinked = id => /^u_/.test(id || "");
+/* an athlete typed a code in their own view: match it to the athlete it was made for and move that plan to their account */
+function processClaims() {
+  let ch = false;
+  st.claims.forEach(c => {
+    if (c.done) return;
+    const aid = Object.keys(st.athletes).find(k => !isLinked(k) && st.athletes[k].claim && st.athletes[k].claim === c.code);
+    if (!aid || st.athletes[c.id]) return;
+    c.done = true;
+    moveAthlete(aid, c.id, true);
+    chain = chain.then(() => db.doc("claims/" + c.id).delete()).catch(() => {});
+    ch = true;
+  });
+  st.claims = st.claims.filter(c => !c.done);
+  remoteRender();
+  return ch;
+}
+/* move a plan to another record id: linking (to the athlete's account id) or unlinking (to a fresh id) */
+function moveAthlete(from, to, linking) {
+  const a = st.athletes[from];
+  if (!a || st.athletes[to]) return;
+  const na = Object.assign({}, a);
+  delete na.claim;
+  st.pend[from] = st.pend[to] = true;
+  st.athletes[to] = na;
+  delete st.athletes[from];
+  st.privNotes[to] = undefined;
+  if (st.cur === from) {
+    st.cur = to;
+    lsSet("rsp-cur", to);
+  }
+  setSave("Saving…");
+  chain = chain
+    .then(async () => {
+      await writeAthlete(to, na);
+      await db.doc("athletes/" + from).delete();
+      await db.doc("private/" + from).delete();
+      delete st.privNotes[from];
+    })
+    .then(
+      () => setSave(linking ? `${na.name}'s plan is now linked to their account` : "Saved"),
+      e => setSave("Could not save: " + ((e && e.message) || "storage refused the change")),
+    )
+    .then(() => {
+      st.pend[from] = st.pend[to] = false;
+    });
 }
 function saveCal() {
   if (st.mode === "local") {
@@ -82,15 +246,22 @@ function saveCal() {
     setSave("Saved in this browser only");
     return;
   }
+  if (st.role !== "coach") return;
   clearTimeout(timers.__cal);
   setSave("Saving…");
+  st.pend.__cal = true;
   timers.__cal = setTimeout(() => {
+    st.pend.__cal = false;
+    st.inflight.__cal = (st.inflight.__cal || 0) + 1;
     chain = chain
       .then(() => db.doc("shared/calendar").set(JSON.parse(JSON.stringify(st.cal))))
       .then(
         () => setSave("Saved"),
         e => setSave("Could not save: " + ((e && e.message) || "storage refused the change")),
-      );
+      )
+      .then(() => {
+        st.inflight.__cal--;
+      });
   }, 500);
 }
 /* an athlete's plan = the shared calendar, filtered by what is switched on for them, with their own priority and taper */
@@ -195,10 +366,12 @@ async function boot() {
     }
     const want = lsGet("rsp-cur");
     st.cur = st.athletes[want] ? want : Object.keys(st.athletes)[0] || null;
+    if (st.role !== "coach") st.view = "athlete";
     render();
   };
   if (!(window.claude && window.claude.use)) return finish("local");
-  const t = setTimeout(() => finish("local"), 10000);
+  const t = setTimeout(() => finish("local"), 10000),
+    uP = window.claude.use("user").catch(() => null);
   try {
     db = await window.claude.use("db");
     if (!db) {
@@ -224,18 +397,33 @@ async function boot() {
     });
     if (cd.exists) st.cal = cp(cd.data());
     if (fd) st.feed = assembleFeed(fd.docs.map(d => ({ id: d.id, data: cp(d.data()) })));
-    /* nothing readable: either a new owner, or someone the access rules keep out until their plan is linked */
-    if (!snap.docs.length) {
-      st.locked = true;
-      window.claude.use("user").then(
-        u => {
-          st.locked = !(u && u.isOwner());
-          render();
-        },
-        () => {},
-      );
+    /* who is this? The owner is the coach. Anyone else only ever reads their own linked plan (access rules). */
+    const u = await Promise.race([uP, new Promise(r => setTimeout(() => r(null), 8000))]);
+    st.user = u;
+    st.me = u ? await u.id().catch(() => null) : null;
+    const owner = u ? u.isOwner() : snap.docs.length > 1;
+    st.role = owner ? "coach" : snap.docs.length ? "athlete" : "locked";
+    if (st.role === "coach") {
+      /* coach's private notes; notes still kept in an athlete record move to the private record */
+      let pv = null;
+      try {
+        pv = await db.collection("private").get();
+      } catch (e) {
+        pv = null;
+      }
+      if (pv)
+        pv.docs.forEach(d => {
+          const n = (d.data() || {}).notes || "";
+          st.privNotes[d.id] = n;
+          if (st.athletes[d.id] && !st.athletes[d.id].notes) st.athletes[d.id].notes = n;
+        });
     }
     finish("db");
+    if (st.role === "coach")
+      snap.docs.forEach(d => {
+        if ("notes" in (d.data() || {})) persist(d.id);
+      });
+    startSync();
     window.claude.use("sample").then(
       d => {
         st.sample = d;
@@ -263,19 +451,32 @@ const hrs = v => (Math.round(v * 2) / 2).toFixed(1).replace(".0", "");
 const discLab = { "10m": "10m", "50m": "50m 3P", both: "10m + 50m" },
   tierLab = { small: "Minor", major: "Major", key: "Key", peak: "Peak" };
 function render() {
-  if (st.locked) {
+  if (st.role === "locked") {
     $("notice").innerHTML = "";
     $("athbar").innerHTML = "";
-    $("app").innerHTML =
-      `<div class="panel empty"><h2>Your plan is not linked yet</h2><p>Your coach has shared the planner with you, but has not yet linked your own plan to your account. Once they have, it will appear here. You will only ever see your own plan.</p></div>`;
+    $("app").innerHTML = `<div class="panel empty"><h2>Your plan is not linked yet</h2>${
+      st.me
+        ? `<p>Your coach gives you a 6-letter link code. Enter it here once. Your plan then appears on this page, usually within a few seconds; your coach's planner needs to be open somewhere for the link to complete. You only ever see your own plan.</p>
+      <form id="claim-form" class="row" style="justify-content:center"><label class="f">Link code<input id="claim-code" maxlength="6" autocomplete="off" style="width:110px;text-transform:uppercase;letter-spacing:.12em" required></label><button class="pri" type="submit">Link my plan</button></form>
+      ${st.claimMsg ? `<p role="status" style="margin-top:10px">${esc(st.claimMsg)}</p>` : ""}`
+        : `<p>Your account could not be identified in this view. Open the planner in the Claude app or on claude.ai while signed in.</p>`
+    }</div>`;
+    return;
+  }
+  if (st.role === "athlete") {
+    renderAthlete();
     return;
   }
   const ids = Object.keys(st.athletes).sort((x, y) => st.athletes[x].name.localeCompare(st.athletes[y].name)),
     a = cur();
+  const badClaims = st.role === "coach" ? st.claims.filter(c => !c.done) : [];
   $("notice").innerHTML =
-    st.mode === "local"
+    (badClaims.length
+      ? `<div class="banner">${badClaims.map(c => `Someone entered the link code <strong>${esc(c.code)}</strong>, which does not match any athlete's current code${Object.keys(st.athletes).includes(c.id) ? " (their account is already linked to a plan)" : ""}. <button class="link" data-act="claim-del" data-id="${esc(c.id)}">Remove</button>`).join("<br>")}</div>`
+      : "") +
+    (st.mode === "local"
       ? `<div class="banner">Plans are being kept in this browser only, because account storage is not available in this view. They will not appear on another device.</div>`
-      : "";
+      : "");
   $("athbar").innerHTML =
     st.mode === "loading"
       ? ""
@@ -329,7 +530,7 @@ function render() {
   const oldTl = $("tl"),
     keep = oldTl ? oldTl.parentElement.scrollLeft : 0;
   $("app").innerHTML =
-    `<div class="wrap">${profileHtml(a)}${yearHtml(a, P)}${flagsHtml(P)}${suggestHtml(P, a)}${blockHtml(P)}${feedGoalsHtml(a, P)}<div class="grid2">${eventsHtml(a)}${settingsHtml(P)}</div><div class="grid2">${notesHtml(a)}${resultsHtml(a, P)}</div>${methodHtml()}${backupHtml()}</div>`;
+    `<div class="wrap">${profileHtml(a)}${accessHtml(a)}${yearHtml(a, P)}${flagsHtml(P)}${suggestHtml(P, a)}${blockHtml(P)}${feedGoalsHtml(a, P)}<div class="grid2">${eventsHtml(a)}${settingsHtml(P)}</div><div class="grid2">${notesHtml(a)}${resultsHtml(a, P)}</div>${methodHtml()}${backupHtml()}</div>`;
   if (st.adding) {
     const n = $("ath-new");
     n && n.focus();
@@ -351,6 +552,88 @@ function render() {
   st.jump = false;
   syncEvForm();
 }
+/* ---------- athlete access (coach side) ---------- */
+function nameOf(id) {
+  if (st.names[id] == null && st.user && st.user.profiles) {
+    st.names[id] = "";
+    st.user.profiles([id]).then(
+      ps => {
+        const n = (ps[id] && ps[id].name) || "";
+        if (n) {
+          st.names[id] = n;
+          remoteRender();
+        }
+      },
+      () => {},
+    );
+  }
+  return st.names[id] || "";
+}
+function accessHtml(a) {
+  if (st.mode !== "db" || st.role !== "coach") return "";
+  const id = st.cur;
+  if (isLinked(id)) {
+    const n = nameOf(id);
+    return `<section class="panel acc"><div class="hd"><h2>Athlete access</h2><span class="pill rate-ok">Linked</span></div>
+    <p style="margin:0">This plan is linked to ${n ? `<strong>${esc(n)}</strong>'s account` : "an athlete's account"}. When they open the planner they see only this plan. They can switch competitions on or off and change their priority and taper, plan their weekly sessions and fill in the weekly log. Everything else, including your notes, stays with you.</p>
+    <div class="row" style="margin-top:8px">${st.confirmDel === "unlink" ? `<button class="danger" data-act="acc-unlink2">Unlink: they lose access to this plan</button><button data-act="del-cancel">Keep</button>` : `<button class="link" data-act="acc-unlink">Unlink this account</button>`}</div></section>`;
+  }
+  return `<section class="panel acc"><div class="hd"><h2>Athlete access</h2><span class="muted">Not linked</span></div>
+  ${
+    a.claim
+      ? `<p style="margin:0 0 6px">Link code for ${esc(a.name)}: <strong class="code">${esc(a.claim)}</strong></p>
+    <ol class="steps"><li>In the Share menu, invite ${esc(a.name)} by email as <strong>Editor</strong>. Keep "anyone with the link" off: with it on, invited people can only view.</li><li>Give them this code. When they open the planner they are asked for it once.</li><li>Their plan links to their account the next time this planner is open, usually straight away. This code then stops working.</li></ol>
+    <div class="row" style="margin-top:6px"><button data-act="acc-code">Make a new code</button><button class="link" data-act="acc-nocode">Cancel the code</button></div>`
+      : `<p style="margin:0 0 8px">Let ${esc(a.name)} open this plan in their own Claude app. They will see only their own plan, and can change only their competitions, weekly sessions and weekly log.</p><button data-act="acc-code">Create a link code</button>`
+  }</section>`;
+}
+/* ---------- the athlete's own view ---------- */
+function renderAthlete() {
+  const a = cur();
+  if (!a) return;
+  if (st.view === "squad") st.view = "athlete";
+  $("notice").innerHTML = "";
+  $("athbar").innerHTML =
+    `<div class="seg" role="group" aria-label="View">${[
+      ["athlete", "My plan"],
+      ["month", "Month calendar"],
+    ]
+      .map(v => `<button data-act="view" data-id="${v[0]}" class="${st.view === v[0] ? "on" : ""}" aria-pressed="${st.view === v[0]}">${v[1]}</button>`)
+      .join("")}</div><span id="save">Saved</span>`;
+  const P = plan(view(a));
+  P.fg = null;
+  if (st.sel == null || st.sel >= P.blocks.length) {
+    const now = Math.floor((Date.now() - P.s0) / WEEK);
+    st.sel = now >= 0 && now < P.N ? P.W[now].block : 0;
+  }
+  const head = `<section class="panel"><div class="lab">Season ${esc(seasonLab({ start: a.seasonStart, weeks: a.weeks || 52 }))}</div><h2>${esc(a.name)}</h2>
+    <p class="muted" style="margin:6px 0 0;font-size:12.5px">This is your plan from your coach. You can switch competitions on or off and change their priority, plan your weekly sessions (Plan sessions on a week card) and fill in your weekly log. Your coach sees every change.</p></section>`;
+  if (st.view === "month") {
+    $("app").innerHTML = `<div class="wrap">${head}${monthHtml(a, P)}</div>`;
+    return;
+  }
+  const oldTl = $("tl"),
+    keep = oldTl ? oldTl.parentElement.scrollLeft : 0;
+  $("app").innerHTML = `<div class="wrap">${head}${yearHtml(a, P)}${flagsHtml(P)}${blockHtml(P)}${eventsHtml(a)}${methodHtml()}</div>`;
+  const tl = $("tl");
+  if (tl) {
+    const sc = tl.parentElement,
+      cw = +tl.dataset.cw,
+      lw = +tl.dataset.lw,
+      b = P.blocks[st.sel];
+    sc.scrollLeft = keep;
+    if (st.jump) {
+      const x0 = b.start * cw,
+        x1 = (b.start + b.len) * cw,
+        vis = sc.clientWidth - lw;
+      if (x0 < sc.scrollLeft || x1 > sc.scrollLeft + vis) sc.scrollLeft = Math.max(0, x0 - cw);
+    }
+  }
+  st.jump = false;
+}
+/* what an athlete may do on the page; everything else is the coach's */
+const ATH_ACTS = new Set(["view", "blk-prev", "blk-next", "zoom", "del-cancel"]);
+const athAllowed = act => ATH_ACTS.has(act) || act.startsWith("wk-") || act.startsWith("ses-");
 function seasonsOf(a) {
   const l = (a.seasons || [])
     .filter(x => x && x.start && x.start !== a.seasonStart)
@@ -916,7 +1199,7 @@ function logHtml(w, P) {
 function logAdjHtml(w) {
   if (!w.logAdj || !w.logAdj.length) return "";
   return `<div class="logadj"><span class="lab">From last week's log</span>${w.logAdj
-    .map(x => `<div class="${x.ign ? "ign" : ""}">${esc(x.text)} <button class="link" data-act="log-ign" data-id="${esc(x.key)}">${x.ign ? "Apply again" : "Ignore"}</button></div>`)
+    .map(x => `<div class="${x.ign ? "ign" : ""}">${esc(x.text)}${st.role === "coach" ? ` <button class="link" data-act="log-ign" data-id="${esc(x.key)}">${x.ign ? "Apply again" : "Ignore"}</button>` : x.ign ? " (your coach has set this aside)" : ""}</div>`)
     .join("")}</div>`;
 }
 
@@ -1029,8 +1312,8 @@ function blockHtml(P) {
     ["rec", "crec", "Recovery"],
   ];
   return `<section class="panel"><div class="hd"><div><div class="lab">Block ${st.sel + 1} of ${P.blocks.length} · ${esc(b.pattern)}</div><h2>${nm}, weeks ${b.start + 1}–${b.start + b.len} <span class="muted" style="font-weight:500">${range(ws[0].start, ws[ws.length - 1].start + 6 * DAY)}</span></h2></div>
-  <div class="row">${Object.keys(P.adj).length ? `<button class="link" data-act="adj-clear-all">Clear all ${Object.keys(P.adj).length} hand adjustments</button>` : ""}${st.sample ? `<button data-act="review"${st.review && st.review.status === "thinking" ? " disabled" : ""}>Review this block with Claude</button>` : ""}<button data-act="blk-prev"${st.sel === 0 ? " disabled" : ""}>← Previous block</button><button data-act="blk-next"${st.sel === P.blocks.length - 1 ? " disabled" : ""}>Next block →</button></div></div>
-  ${reviewHtml(cur(), P)}
+  <div class="row">${Object.keys(P.adj).length && st.role === "coach" ? `<button class="link" data-act="adj-clear-all">Clear all ${Object.keys(P.adj).length} hand adjustments</button>` : ""}${st.sample && st.role === "coach" ? `<button data-act="review"${st.review && st.review.status === "thinking" ? " disabled" : ""}>Review this block with Claude</button>` : ""}<button data-act="blk-prev"${st.sel === 0 ? " disabled" : ""}>← Previous block</button><button data-act="blk-next"${st.sel === P.blocks.length - 1 ? " disabled" : ""}>Next block →</button></div></div>
+  ${st.role === "coach" ? reviewHtml(cur(), P) : ""}
   ${
     P.fg
       ? (() => {
@@ -1069,6 +1352,7 @@ function blockHtml(P) {
     ${logAdjHtml(w)}
     ${w.start <= Date.now() ? logHtml(w, P) : `<label class="f">Note for this week<textarea id="wn-${iso(w.start)}" data-wn="${iso(w.start)}" rows="2" maxlength="600" placeholder="Anything to remember about this week">${esc((P.wn || {})[iso(w.start)] || "")}</textarea></label>`}
     ${(k => {
+      if (st.role !== "coach") return "";
       const j = P.adj[k] || {},
         o = (v, l) => `<option value="${v}"${(j.phase || "auto") === v ? " selected" : ""}>${l}</option>`;
       return `<details class="adj"${P.adj[k] ? " open" : ""}><summary>Adjust this week${P.adj[k] ? " · adjusted by hand" : ""}</summary><div class="row">
@@ -1191,9 +1475,10 @@ function eventsHtml(a) {
   const list = st.cal.events.slice().sort((x, y) => parse(x.start) - parse(y.start)),
     nOn = list.filter(e => pk[e.id] && pk[e.id].on).length,
     others = Object.keys(st.athletes).length > 1;
-  const sugg = feedMatches();
+  const sugg = st.role === "coach" ? feedMatches() : [],
+    coach = st.role === "coach";
   return `<section class="panel"><div class="hd"><h2>Competitions, camps and holidays</h2>${sugg.length ? `<button class="link" data-act="fc-link">Link ${sugg.length} competition${sugg.length === 1 ? "" : "s"} to the ISSF calendar</button>` : ""}<span class="muted">${list.length} in the shared calendar · ${nOn} in ${esc(a.name)}'s plan</span></div>
-  <form id="ev-form" class="row" style="margin-bottom:12px">
+  ${coach ? `<form id="ev-form" class="row" style="margin-bottom:12px">
     <label class="f" style="flex:1 1 180px">Name<input id="ev-name" required maxlength="80" value="${esc(v.name || "")}"></label>
     <label class="f">Type<select id="ev-type">${opt("comp", "Competition", v.training ? "training" : v.type)}${opt("training", "Training match", v.training ? "training" : v.type)}${opt("camp", "Training camp", v.type)}${opt("hol", "Holiday (no training)", v.type)}</select></label>
     <label class="f" id="ev-disc-w">Discipline<select id="ev-disc">${opt("10m", "10m", v.disc)}${opt("50m", "50m 3P", v.disc)}${opt("both", "Both", v.disc)}</select></label>
@@ -1203,23 +1488,23 @@ function eventsHtml(a) {
     <label class="f">Last day<input id="ev-end" type="date" min="${esc(v.start || "")}" value="${esc(v.end || "")}"></label>
     ${!ed && others ? `<label class="chk"><input id="ev-all" type="checkbox"> Switch on for every athlete</label>` : ""}
     <button class="pri" type="submit">${ed ? "Save for all athletes" : "Add to calendar"}</button>${ed ? `<button type="button" data-act="ev-cancel">Cancel</button>` : ""}
-  </form>
+  </form>` : ""}
   ${
     list.length
-      ? `<div class="tw"><table><thead><tr><th>In plan</th><th>Dates</th><th>Event</th><th>Priority for ${esc(a.name)}</th><th>Taper</th><th></th></tr></thead><tbody>${list
+      ? `<div class="tw"><table><thead><tr><th>In plan</th><th>Dates</th><th>Event</th><th>Priority for ${esc(a.name)}</th><th>Taper</th>${coach ? "<th></th>" : ""}</tr></thead><tbody>${list
           .map(e => {
             const k = pk[e.id] || {},
               on = !!k.on,
               tier = k.tier || e.tier;
             return `<tr class="${on ? "" : "off"}">
-    <td><input type="checkbox" id="pk-${e.id}" data-pick="${e.id}"${on ? " checked" : ""} aria-label="Include ${esc(e.name)} in this athlete's plan"></td>
+    <td><input type="checkbox" id="pk-${e.id}" data-pick="${e.id}"${on ? " checked" : ""}${!coach && e.type !== "comp" ? " disabled" : ""} aria-label="Include ${esc(e.name)} in this athlete's plan"></td>
     <td class="num" style="white-space:nowrap">${range(parse(e.start), parse(e.end || e.start))}</td><td>${esc(e.name)}${e.type === "comp" ? ` <span class="muted">· ${discLab[e.disc]}</span>` : ""}${e.feedComp && st.feed ? (c => (c ? `<div class="muted" style="font-size:12px">ISSF: ${esc(c.name)}, ${esc(c.city)}</div>` : `<div class="muted" style="font-size:12px">ISSF competition no longer in the feed</div>`))(st.feed.meta.calendar.find(c => c.id === e.feedComp)) : ""}</td>
     <td>${e.type === "camp" ? "Camp" : e.type === "hol" ? "Holiday, no training" : e.training ? "Training match" : on ? `<select id="pt-${e.id}" data-ptier="${e.id}" aria-label="Priority">${opt("small", "Minor", tier)}${opt("major", "Major", tier)}${opt("key", "Key ◆", tier)}${opt("peak", "Peak ★", tier)}</select>` : `<span class="muted">${tierLab[e.tier]} usually</span>`}</td>
     <td style="white-space:nowrap">${e.type === "comp" && on && tier === "peak" ? `<input id="pp-${e.id}" type="number" min="1" max="4" style="width:58px" placeholder="${settingsOf(a).taperPeak}" data-ptaper="${e.id}" value="${esc(k.taper || "")}" aria-label="Taper weeks"> wk` : ""}</td>
-    <td class="act">${st.confirmDel === e.id ? `<button class="link danger" data-act="ev-del2" data-id="${e.id}">Delete for all athletes</button><button class="link" data-act="del-cancel">Keep</button>` : `<button class="link" data-act="ev-edit" data-id="${e.id}">Edit</button><button class="link danger" data-act="ev-del" data-id="${e.id}">Delete</button>`}</td></tr>`;
+    ${coach ? `<td class="act">${st.confirmDel === e.id ? `<button class="link danger" data-act="ev-del2" data-id="${e.id}">Delete for all athletes</button><button class="link" data-act="del-cancel">Keep</button>` : `<button class="link" data-act="ev-edit" data-id="${e.id}">Edit</button><button class="link danger" data-act="ev-del" data-id="${e.id}">Delete</button>`}</td>` : ""}</tr>`;
           })
           .join("")}</tbody></table></div>
-  <p class="muted" style="margin:8px 0 0;font-size:12.5px">The calendar is shared by all athletes. The tick, priority and taper apply to ${esc(a.name)} only. Editing or deleting an event changes it for everyone.</p>`
+  <p class="muted" style="margin:8px 0 0;font-size:12.5px">${coach ? `The calendar is shared by all athletes. The tick, priority and taper apply to ${esc(a.name)} only. Editing or deleting an event changes it for everyone.` : "The calendar comes from your coach. The tick, priority and taper change your plan only; camps and holidays are set by your coach. Ask your coach to add a competition that is missing."}</p>`
       : `<p class="muted" style="margin:0">The shared calendar is empty. Add each competition and camp once, then tick the ones each athlete is doing. Start with the peak events (World Championships, continental championships), then World Cups, domestic matches, fixed camps and holidays.</p>`
   }</section>`;
 }
@@ -1494,6 +1779,32 @@ document.addEventListener("click", e => {
   if (!b) return;
   const act = b.dataset.act,
     id = b.dataset.id;
+  if (st.role === "locked" || (st.role === "athlete" && !athAllowed(act))) return;
+  if (act === "claim-del") {
+    st.claims = st.claims.filter(c => c.id !== id);
+    chain = chain.then(() => db.doc("claims/" + id).delete()).catch(() => {});
+    render();
+    return;
+  }
+  if (act === "acc-code" || act === "acc-nocode") {
+    mutate(a => {
+      if (act === "acc-code") a.claim = newCode();
+      else delete a.claim;
+    });
+    processClaims();
+    return;
+  }
+  if (act === "acc-unlink") {
+    st.confirmDel = "unlink";
+    render();
+    return;
+  }
+  if (act === "acc-unlink2") {
+    st.confirmDel = null;
+    moveAthlete(st.cur, uid(), false);
+    render();
+    return;
+  }
   if (act === "view") {
     st.view = id;
     render();
@@ -1800,6 +2111,31 @@ document.addEventListener("click", e => {
   }
 });
 document.addEventListener("submit", e => {
+  if (e.target.id === "claim-form") {
+    e.preventDefault();
+    const code = ($("claim-code").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (code.length !== 6 || !db || !st.me) return;
+    st.claimMsg = "Sending…";
+    render();
+    db.doc("claims/" + st.me)
+      .set({ code })
+      .then(
+        () => {
+          st.claimMsg = `Code ${code} sent. Your plan appears here as soon as your coach's planner has matched it. If nothing happens, check the code with your coach.`;
+          render();
+        },
+        () => {
+          st.claimMsg =
+            "The code could not be sent. Your coach needs to share the planner with you by email as Editor, with \"anyone with the link\" switched off.";
+          render();
+        },
+      );
+    return;
+  }
+  if (st.role !== "coach") {
+    e.preventDefault();
+    return;
+  }
   if (e.target.id === "tr-form") {
     e.preventDefault();
     const d = $("tr-date").value,
@@ -1868,6 +2204,11 @@ document.addEventListener(
 );
 document.addEventListener("change", e => {
   const t = e.target;
+  if (st.role === "locked") return;
+  if (st.role === "athlete") {
+    const d = t.dataset;
+    if (!(d.pick || d.ptier || d.ptaper || d.log || d.logc || d.wn || d.ses || t.id === "wk-copyfrom")) return;
+  }
   if (t.id === "bk-file") {
     const file = t.files && t.files[0];
     if (!file) return;

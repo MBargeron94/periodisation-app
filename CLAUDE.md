@@ -1,6 +1,6 @@
 # Rifle Season Planner: handoff
 
-A season-planning web app for an elite rifle coach (Swiss national team level: World Cups, Europeans, Worlds). Disciplines: 10m air rifle and 50m rifle 3 positions (prone is shown from the rankings feed but not planned). It periodises each athlete's year backwards from their peak competitions, builds 4-week loading blocks, and checks the calendar for conflicts. The coach is the only user for now.
+A season-planning web app for an elite rifle coach (Swiss national team level: World Cups, Europeans, Worlds), with a restricted view for athletes linked to their own plan. Disciplines: 10m air rifle and 50m rifle 3 positions (prone is shown from the rankings feed but not planned). It periodises each athlete's year backwards from their peak competitions, builds 4-week loading blocks, and checks the calendar for conflicts. The coach is the main user; athletes can be linked to their own plan (see Athlete access).
 
 - Live page (private Claude artifact): https://claude.ai/artifact/FZUTckWZyRBJYhpZTNqKHa
 - Code: this repository (`MBargeron94/periodisation-app`), branch `main`.
@@ -24,15 +24,26 @@ A season-planning web app for an elite rifle coach (Swiss national team level: W
 
 ## Data (artifact database)
 
-- `athletes/<id>`: one document per athlete. Main fields: `name`, `issfId`, `birthYear`, `strength`, `seasonStart`, `weeks`, `hoursMax`, `seasons`, `settings` (taper, recovery, splits, finals shares, shot rates), `picks` (per calendar event: `on`, own `tier`, `taper`), `adj` (hand adjustments by week start date), `weekNotes`, `wlog` (weekly logs), `logIgnore`, `results`, `fgoals` (goals per season), `fgMain`, `training` (training scores), `notes`, `sessions` (week planner: by week start date, a list of `{id, day 0–6 from Monday, ampm, type t10|t50|phys|mental|rec, dur hours, shots (10m), k/p/s (50m), fin, loc, note}`).
+- `athletes/<id>`: one document per athlete. `<id>` is a random id, or the athlete's Claude user id (`u_...`) once linked; `claim` holds an open 6-letter link code. Main fields: `name`, `issfId`, `birthYear`, `strength`, `seasonStart`, `weeks`, `hoursMax`, `seasons`, `settings` (taper, recovery, splits, finals shares, shot rates), `picks` (per calendar event: `on`, own `tier`, `taper`), `adj` (hand adjustments by week start date), `weekNotes`, `wlog` (weekly logs), `logIgnore`, `results`, `fgoals` (goals per season), `fgMain`, `training` (training scores), `sessions` (week planner: by week start date, a list of `{id, day 0–6 from Monday, ampm, type t10|t50|phys|mental|rec, dur hours, shots (10m), k/p/s (50m), fin, loc, note}`).
+- `private/<id>`: `{notes}`, the coach's notes on that athlete (owner only). The page merges them into `a.notes` in memory and `writeAthlete` splits them out again; an old `notes` field in an athlete record is moved here when the coach opens the page.
+- `claims/<user id>`: `{code}` written by an athlete who entered a link code; the coach's open page matches it to an athlete's `claim`, moves the record to `athletes/<user id>` and deletes the claim.
 - `shared/calendar`: `{events: [...]}`, shared by all athletes. Event types: `comp` (tier `small` = minor, `major`, `key`, `peak`; `training: true` for training matches; `feedComp` = linked ISSF competition id), `camp`, `hol`.
-- `feed/meta` and `feed/<EVENT>-<n>`: the rankings-feed copy. Only the artifact's owner (the coach) can read or write `athletes` and write `shared` and `feed` (access rules, since athletes were shared the page as Editors). Someone who can read no athletes and is not the owner sees a "Your plan is not linked yet" page.
+- `feed/meta` and `feed/<EVENT>-<n>`: the rankings-feed copy. Access rules: only the artifact's owner (the coach) reads or writes `athletes`, `private` and `claims`, and writes `shared` and `feed`; each signed-in person also reads and writes their own `athletes/<their id>` and `claims/<their id>`.
 
 Write to these with the ArtifactData tool, always pinned with `if_version` to the version you read. Take a fresh read first: the coach edits the page between sessions.
 
 ## Publishing
 
-Publish `index.html` with `files` = `js/core.js`, `js/feed.js`, `js/app.js` (and `root` = this repository) to the artifact URL above, so the link stays the same. Capabilities to keep: `db` with rules `{path: "athletes", read: "owner", write: "owner"}`, `{path: "shared", read: "view", write: "owner"}`, `{path: "feed", read: "view", write: "owner"}`, plus `user`, `downloads`, `sample`. Restate all of them whenever you pass `capabilities`, or omit the field to keep them. Commit and push to `main` after each publish.
+Publish `index.html` with `files` = `js/core.js`, `js/feed.js`, `js/app.js` (and `root` = this repository) to the artifact URL above, so the link stays the same. Capabilities to keep: `db` with rules `athletes` (read owner, write owner), `athletes/{self}` (interact, interact), `private` (owner, owner), `claims` (owner, owner), `claims/{self}` (interact, interact), `shared` (view, owner), `feed` (view, owner); `user` with `scopes: ["profile"]`; `downloads`; `sample`. Restate all of them whenever you pass `capabilities`, or omit the field to keep them. Commit and push to `main` after each publish.
+
+## Athlete access
+
+- The coach is on an individual Claude plan. Athletes are invited by email as **Editor** (the only outside level that can write); with "anyone with the link" sharing on, invited people only get view and cannot link or edit.
+- Roles (`st.role`): `coach` (page owner, or browser-only mode), `athlete` (not the owner, can read a plan: only their own), `locked` (not the owner, no plan yet: link-code form).
+- Linking: coach clicks "Create a link code" in Athlete access (under the profile), gives the code to the athlete; the athlete enters it on the locked page; the coach's page (must be open) moves the plan to `athletes/<their id>` via `moveAthlete`. "Unlink" moves it back to a random id. Account ids are never shown; names come from `user.profiles`.
+- Athletes see: their year view, checks, block and week cards (week planner, week notes and log), their competitions (on/off for competitions, priority, taper), month calendar, method. Hidden: squad, other athletes, profile fields, hand adjustments, log "Ignore", Claude review, suggestions, goals, results, notes, planning rules, backup, calendar editing. Click and change handlers also refuse everything else (`athAllowed`).
+- Live sync (`startSync`): `onSnapshot` on athletes, the calendar and (coach) claims, so coach and athlete see each other's changes; writes are still whole-document, last writer wins within the half-second save delay. Remote changes re-render only when nobody is typing.
+- Limits told to the coach: an Editor can publish a new version with Claude and loosen the rules; within their own record an athlete could technically change any field (the page only offers the allowed ones). The coach's notes are kept out of reach in `private`.
 
 ## Feed refresh (on request only)
 
@@ -63,11 +74,11 @@ No token is used anywhere: the session's GitHub access reads the repo, and the p
 - Training-camp day plans tried and removed (coach did not like them).
 - Junior results: skipped. The feed is senior-only; Martina has no feed entry.
 - Not wanted for now: athlete handout, shots-per-position detail beyond what exists, travel/time zones, plan-vs-actual logging beyond the weekly log.
-- A standalone web app (own hosting and logins) is deferred until someone other than the coach needs access.
+- A standalone web app (own hosting and logins) is deferred; athletes use the Claude page as invited Editors instead (individual plan, so no Team plan).
 
 ## Open items and ideas
 
-- Athlete access (in progress): the coach is on an individual plan and shares the page with athletes by email as Editor. Next step: an `athletes/{self}` rule, a "Link to an account" button for the coach (user search, scope profile) that moves an athlete's record to `athletes/<their user id>`, and an athlete mode showing only their own plan; athletes may change competition picks and priorities (peak, key...), week-planner sessions and the weekly log only. Known limits: an Editor can publish a new version with Claude and loosen the rules; outside Editors lose write access while the page is also shared by public link (it was shared by link when the lock-down was published).
+- Athlete access: built and tested with a stand-in database only; the first real athlete link is the real test. The page was still shared by public link at the last publish; the coach needs to switch that off for athletes to link. Athletes cannot see their goals yet (could add a read-only goals panel).
 
 - Week planner: drafting rules are simple (one rest day in a full week, range in the mornings, physical and recovery in the afternoons, a short range session the day before a competition). The coach has not used it yet; expect changes to the draft after first use. Planned sessions are not sent to the Claude block review.
 
