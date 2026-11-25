@@ -402,7 +402,8 @@ async function boot() {
     const u = await Promise.race([uP, new Promise(r => setTimeout(() => r(null), 8000))]);
     st.user = u;
     st.me = u ? await u.id().catch(() => null) : null;
-    const owner = u ? u.isOwner() : snap.docs.length > 1;
+    /* isOwner() answers asynchronously; anything other than a clear yes is not the owner */
+    const owner = u ? (await Promise.resolve(u.isOwner()).catch(() => false)) === true : snap.docs.length > 1;
     st.role = owner ? "coach" : snap.docs.length ? "athlete" : "locked";
     if (st.role === "coach") {
       /* coach's private notes; notes still kept in an athlete record move to the private record */

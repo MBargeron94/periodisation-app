@@ -78,7 +78,7 @@ No token is used anywhere: the session's GitHub access reads the repo, and the p
 
 ## Open items and ideas
 
-- Athlete access: built and tested with a stand-in database only; the first real athlete link is the real test. The page was still shared by public link at the last publish; the coach needs to switch that off for athletes to link. Athletes cannot see their goals yet (could add a read-only goals panel).
+- Athlete access: built and tested with a stand-in database only; the first real athlete link is the real test. Public-link sharing was switched off by version 27. `user.isOwner()` (and the other user checks) return promises: always await them (version 25 did not, and every viewer got the coach view). Athletes cannot see their goals yet (could add a read-only goals panel).
 
 - Week planner: drafting rules are simple (one rest day in a full week, range in the mornings, physical and recovery in the afternoons, a short range session the day before a competition). The coach has not used it yet; expect changes to the draft after first use. Planned sessions are not sent to the Claude block review.
 
