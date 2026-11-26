@@ -1302,6 +1302,16 @@ function reviewHtml(a, P) {
       <div class="row" style="margin-top:6px;gap:6px">${p.done ? `<span class="pill rate-ok">${p.done}</span>` : `${p.kind === "note" ? "" : `<button data-act="rv-accept" data-id="${p.id}">Accept</button>`}<button class="link" data-act="rv-dismiss" data-id="${p.id}">Dismiss</button>`}</div></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">No changes proposed.</p>`}
     <p class="muted" style="margin:6px 0 0;font-size:12px">Accepted week changes become hand adjustments, which you can undo in the week card. Priority changes apply to ${esc(a.name)} only.</p></div>`;
 }
+/* the week's coaching notes as headed blocks: This week, Range, Finals, Physical, Mental, Tactics, Rest */
+function focusHtml(w, P) {
+  const items = focus(w, P);
+  return `<div class="fx">${FOCUS_GROUPS.map(([g, h]) => {
+    const l = items.filter(x => x.g === g);
+    return l.length
+      ? `<div class="fxb fx-${g}"><div class="lab">${h}</div>${l.length === 1 ? `<p>${esc(l[0].t)}</p>` : `<ul>${l.map(x => `<li>${esc(x.t)}</li>`).join("")}</ul>`}</div>`
+      : "";
+  }).join("")}</div>`;
+}
 function blockHtml(P) {
   const b = P.blocks[st.sel],
     ws = P.W.slice(b.start, b.start + b.len),
@@ -1348,9 +1358,7 @@ function blockHtml(P) {
       .join("")}</div>
     ${w.shots10 + w.shots50 > 0 ? `<div class="shots num"><span class="lab">Suggested live shots</span><div>${w.shots10 ? `10m <b>${w.shots10}</b>` : ""}${w.shots10 && w.shots50 ? " · " : ""}${w.shots50 ? `50m <b>${w.shots50}</b> <span class="muted">(K ${w.pos.k} · P ${w.pos.p} · S ${w.pos.s})</span>` : ""}</div><div class="muted">Load about ${w.units.toLocaleString("en-GB")} units (shots × intensity)</div></div>` : ""}
     ${w.split.fin >= 0.25 ? `<div class="shots num"><span class="lab">Finals training</span><div>About <b>${hrs(w.split.fin)} h</b> of the range time, roughly ${Math.max(1, Math.round(w.split.fin / 0.75))} full final${Math.round(w.split.fin / 0.75) > 1 ? "s" : ""}</div></div>` : ""}
-    <ul>${focus(w, P)
-      .map(t => `<li>${esc(t)}</li>`)
-      .join("")}</ul>
+    ${focusHtml(w, P)}
     ${logAdjHtml(w)}
     ${w.start <= Date.now() ? logHtml(w, P) : `<label class="f">Note for this week<textarea id="wn-${iso(w.start)}" data-wn="${iso(w.start)}" rows="2" maxlength="600" placeholder="Anything to remember about this week">${esc((P.wn || {})[iso(w.start)] || "")}</textarea></label>`}
     ${(k => {

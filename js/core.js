@@ -998,15 +998,26 @@ function suggest(P, a, cal = st.cal) {
 }
 
 /* coaching content for a week */
+/* coaching notes for a week, grouped for the week card: week (what is special about this week), range,
+   finals, phys, mental, tactics, rest. Plain strings pushed below belong to "week". */
+const FOCUS_GROUPS = [
+  ["week", "This week"],
+  ["range", "Range"],
+  ["finals", "Finals"],
+  ["phys", "Physical"],
+  ["mental", "Mental"],
+  ["tactics", "Tactics and equipment"],
+  ["rest", "Rest and recovery"],
+];
 function focus(w, P) {
   const out = [],
     has = t => w.tags.includes(t);
-  if (w.hol >= 6) return [`Holiday: no training this week. Proper time away from the range and the gym.`];
+  if (w.hol >= 6) return [{ g: "rest", t: "Holiday: no training this week. Proper time away from the range and the gym." }];
   if (w.compDays) {
     const nm = [...new Set(w.events.filter(e => e.type === "comp").map(e => e.name))].join(", ");
     if (w.load === 0 && !w.manual)
       return [
-        `Competition: ${nm}. Nothing is planned on competition days. The plan covers the build-up before and the recovery after.`,
+        { g: "week", t: `Competition: ${nm}. Nothing is planned on competition days. The plan covers the build-up before and the recovery after.` },
       ];
     out.push(
       `Competition days: ${w.compDays} (${nm}). Nothing is planned on them; the hours below are for the other days of the week only.`,
@@ -1049,15 +1060,14 @@ function focus(w, P) {
   };
   if (T[w.type]) out.push(T[w.type]);
   const FT = {
-    pp1: "Finals: familiarity work. Commands, timings and single-shot rhythm, with no weight on scores.",
-    pp2: "Finals: full finals with announcements, eliminations and noise. They take attention off qualification scores and build resilience.",
-    pre: "Finals: a main emphasis of range time this week. Full finals under pressure, including starting from behind and shoot-offs.",
-    taper:
-      "Finals: short, sharp finals at competition intensity. Rehearse the walk-in, the presentation and the first shots.",
+    pp1: "Familiarity work. Commands, timings and single-shot rhythm, with no weight on scores.",
+    pp2: "Full finals with announcements, eliminations and noise. They take attention off qualification scores and build resilience.",
+    pre: "A main emphasis of range time this week. Full finals under pressure, including starting from behind and shoot-offs.",
+    taper: "Short, sharp finals at competition intensity. Rehearse the walk-in, the presentation and the first shots.",
   };
-  if (w.finKind && w.split.fin >= 0.25) out.push(FT[w.finKind]);
-  if (w.techFocus) out.push("Technical emphasis from the log: isolated elements, dry firing and holding; judge sessions on process.");
-  if (w.finBoost) out.push("Transfer from the log: competition simulations, full finals and match routines under some pressure.");
+  if (w.finKind && w.split.fin >= 0.25) out.push({ g: "finals", t: FT[w.finKind] });
+  if (w.techFocus) out.push({ g: "range", t: "Technical emphasis from the log: isolated elements, dry firing and holding; judge sessions on process." });
+  if (w.finBoost) out.push({ g: "range", t: "Transfer from the log: competition simulations, full finals and match routines under some pressure." });
   if ((w.avoid || []).length || (w.reduce || []).length) out.push("Health from the log: adjust sessions around the affected positions and check with the medical team before loading them again.");
   if (w.manual)
     out.push("This week has been adjusted by hand, so its figures differ from the automatic plan.");
@@ -1087,34 +1097,36 @@ function focus(w, P) {
     );
   const F = {
     PP1: [
-      "Technique: isolated elements. Dry firing, holding, position rebuilds for kneeling, prone and standing taken one at a time.",
-      "Physical: main strength and aerobic gains of the cycle. Stabilisers and trunk first.",
-      "Mental: relaxation training, goal setting, motivation.",
-      "Equipment and ammunition tests, performance tests and a SCATT baseline belong here.",
+      ["range", "Isolated elements. Dry firing, holding, position rebuilds for kneeling, prone and standing taken one at a time."],
+      ["phys", "Main strength and aerobic gains of the cycle. Stabilisers and trunk first."],
+      ["mental", "Relaxation training, goal setting, motivation."],
+      ["tactics", "Equipment and ammunition tests, performance tests and a SCATT baseline belong here."],
     ],
     PP2: [
-      "Technique: rhythm and flow. Full 3-position courses with changeovers and sighter timing; full 60-shot air rifle matches.",
-      "Physical: maintain, small gains only.",
-      "Mental: concentration, stop techniques, visualisation; write and rehearse the match script.",
-      "Tactics: time management, if-then rules, wind and light reading at 50m. Lock equipment choices; nothing new after this phase.",
+      ["range", "Rhythm and flow. Full 3-position courses with changeovers and sighter timing; full 60-shot air rifle matches."],
+      ["phys", "Maintain, small gains only."],
+      ["mental", "Concentration, stop techniques, visualisation; write and rehearse the match script."],
+      ["tactics", "Time management, if-then rules, wind and light reading at 50m. Lock equipment choices; nothing new after this phase."],
     ],
     COMP: [
-      "Short, technically intense sessions. Competition simulations, finals, competition warm-ups.",
-      "Physical: light aerobic work as active recovery only.",
-      "Mental: competition visualisation, routines, regular sleep and food.",
-      "No new equipment or technique changes.",
+      ["range", "Short, technically intense sessions. Competition simulations, finals, competition warm-ups."],
+      ["phys", "Light aerobic work as active recovery only."],
+      ["mental", "Competition visualisation, routines, regular sleep and food."],
+      ["tactics", "No new equipment or technique changes."],
     ],
     REC: [
-      "No range access. Holiday, leisure, wellness.",
-      "Leave the competition analysis until emotions have settled.",
+      ["rest", "No range access. Holiday, leisure, wellness."],
+      ["mental", "Leave the competition analysis until emotions have settled."],
     ],
-    HOL: ["Holiday: no range or gym sessions are planned."],
+    HOL: [["rest", "Holiday: no range or gym sessions are planned."]],
     AREC: [
-      "Fun recreational sport and light extensive training.",
-      "Complete the competition analysis (body, technique, tactics, mental, environment) and set goals for the next cycle.",
+      ["phys", "Fun recreational sport and light extensive training."],
+      ["mental", "Complete the competition analysis (body, technique, tactics, mental, environment) and set goals for the next cycle."],
     ],
   };
-  return out.concat(F[w.phase]);
+  return out
+    .map(t => (typeof t === "string" ? { g: "week", t } : t))
+    .concat((F[w.phase] || []).map(([g, t]) => ({ g, t })));
 }
 
 /* ================= week planner: individual sessions inside a week ================= */

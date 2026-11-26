@@ -16,7 +16,7 @@ A season-planning web app for an elite rifle coach (Swiss national team level: W
 ## Files
 
 - `index.html`: title, styles (theme tokens for light and dark), markup, then `<script src>` for the three files below, in this order. No `<html>/<head>/<body>`; the artifact host wraps the page.
-- `js/core.js`: dates, defaults, `plan()` (the whole periodisation engine), `suggest()`, `focus()` (coaching text per week). No page state; `suggest` takes the calendar as a default parameter.
+- `js/core.js`: dates, defaults, `plan()` (the whole periodisation engine), `suggest()`, `focus()` (coaching text per week as `{g, t}` items, grouped by `FOCUS_GROUPS`: This week, Range, Finals, Physical, Mental, Tactics and equipment, Rest and recovery; `focusHtml` in app.js draws them as headed blocks). No page state; `suggest` takes the calendar as a default parameter.
 - `js/feed.js`: rankings-feed maths: `assembleFeed`, `feedEntries`, `goalCalc` (README formulas), `feedScore`, `mainGoal`, pathway helpers. Functions take the feed as a parameter (default `st.feed`).
 - `js/app.js`: page state `st`, storage (artifact database with browser-storage fallback), all views and their HTML, event handlers, `boot()`.
 - `tests/run-tests.js`: `node tests/run-tests.js`; add `FEED_JSON=/path/to/rifle-feed.json` to also check every athlete in the real feed against its own headline numbers. Run before every publish.
